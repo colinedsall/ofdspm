@@ -5,3 +5,5 @@ scipy               # Science tools
 pandas              # Data structures
 matplotlib          # Plots
 aespm               # API for SPM
+igor                # For igor file processing
+scikit-learn        # ML
