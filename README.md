@@ -1,5 +1,5 @@
 # ofdspm
-## Outlier/Failure Detector for SPM Scanning
+## Outlier/Failure Detector for SPM
 
 This is a working repository for a solution to errors presented in scanning-probe microscopes between the trace and retrace. Ideally, the difference between the values measured should be zero between the trace and retrace, but in reality they are not.
 
