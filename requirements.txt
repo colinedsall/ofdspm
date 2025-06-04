@@ -1,0 +1,7 @@
+# Requirements to run the Jupyter notebooks or environment on a local machine
+spmsimu             # Simulator
+numpy               # Functions/math
+scipy               # Science tools
+pandas              # Data structures
+matplotlib          # Plots
+aespm               # API for SPM
