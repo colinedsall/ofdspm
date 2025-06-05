@@ -7,3 +7,4 @@ matplotlib          # Plots
 aespm               # API for SPM
 igor                # For igor file processing
 scikit-learn        # ML
+xgboost             # ML (XGBoost)
