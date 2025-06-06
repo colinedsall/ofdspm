@@ -5,6 +5,14 @@ scipy               # Science tools
 pandas              # Data structures
 matplotlib          # Plots
 aespm               # API for SPM
+aespm.tools         # Tools for viewing .ibw files
+matplotlib.pyplot   # Plotting images (synthetic)
 igor                # For igor file processing
 scikit-learn        # ML
 xgboost             # ML (XGBoost)
+
+# CLI/Time
+argparse
+time
+subprocess
+sys

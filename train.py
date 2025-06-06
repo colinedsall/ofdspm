@@ -1,10 +1,13 @@
 """
 Filename:       train.py
 Author:         Colin Edsall
-Date:           June 5th, 2025
-Version:        1
+Date:           June 6th, 2025
+Version:        2
 Description:    Combines the logic from the Jupyter notebook to create and train a XGBoostClassifier model to
                 predict the classification of any given .ibw file.
+Changelog:      Version 1:  Initial design from Jupyter notebook.
+                Version 2:  Made changes to the synthetic drawing algorithm in order to better fit the tip failure 
+                            model.
 """
 
 # Imports
@@ -65,7 +68,7 @@ def create_synthetic(height=256, width=256, channels=['Height', 'Amplitude', 'Ph
         
         return noise1 + noise2
     
-    def add_horizontal_lines(image, intensity_range=(-25, 25)):
+    def add_horizontal_lines(image, intensity_range=(-5, 25)):
         """Add horizontal line artifacts at random positions"""
         corrupted = image.copy()
         
@@ -77,7 +80,7 @@ def create_synthetic(height=256, width=256, channels=['Height', 'Amplitude', 'Ph
             for row in corrupted_rows:
                 # Random line characteristics
                 line_intensity = np.random.uniform(*intensity_range)
-                line_width = np.random.randint(5, 35) 
+                line_width = np.random.randint(5, 25) 
                 
                 # Add the line with some variation
                 for w in range(line_width):
@@ -258,14 +261,14 @@ def create_synthetic(height=256, width=256, channels=['Height', 'Amplitude', 'Ph
             syn = add_horizontal_lines(syn)
             syn = add_scattered_noise(syn, params['scatter_density'])
             syn = add_gradient_drift(syn)
-            syn = add_stripe_artifacts(syn)
+            # syn = add_stripe_artifacts(syn)
             syn = add_surface_points(syn, num_points=250, min_sigma=5, max_sigma=75, amplitude_range=(-4, 4))
-            syn = add_hard_surface_points(syn, num_points=1000, min_radius=10, max_radius=25, amplitude_range=(-5, 20), shape='disk')
+            syn = add_hard_surface_points(syn, num_points=1000, min_radius=10, max_radius=25, amplitude_range=(-5, 20), shape='cone')
 
         else:
             syn = add_gradient_drift(syn)
             syn = add_surface_points(syn, num_points=250, min_sigma=5, max_sigma=75, amplitude_range=(-4, 4))
-            syn = add_hard_surface_points(syn, num_points=1000, min_radius=10, max_radius=25, amplitude_range=(-5, 20), shape='disk')
+            syn = add_hard_surface_points(syn, num_points=1000, min_radius=10, max_radius=25, amplitude_range=(-5, 20), shape='cone')
 
 
         
@@ -496,10 +499,10 @@ def train_ml_model_from_synthetic_sets(good_set, bad_set):
     
     combined_model = ScaledModel(model, scaler)
 
-    with open('synthetic_image_quality_model.pkl', 'wb') as f:
+    with open('synthetic_image_quality_model_train.pkl', 'wb') as f:
         pickle.dump(combined_model, f)
 
-    print("Model saved as 'synthetic_image_quality_model.pkl'")
+    print("Model saved as 'synthetic_image_quality_model_train.pkl'")
     return combined_model
 
 """ This function is mostly used to call both sets to be created.
@@ -973,36 +976,66 @@ Actions:
 """
 
 import argparse
+import time
+import subprocess
+import sys
+import aespm.tools as at
+import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic SFM image analysis and ML training")
     parser.add_argument('--show', action='store_true', default=False, help='Show visualizations')
-    parser.add_argument('--generate', action='store_false', default=False, help='Train and generate a ML model')
+    parser.add_argument('--generate', action='store_true', default=False, help='Train and generate a ML model')
+    parser.add_argument('--generate-subprocess', action='store_true', default=False, help='Internal flag for subprocess training')
     parser.add_argument('--file', type=str, default="sample_data/bad_images/PositionC_30Cs70M0000.ibw", help='Path to the IBW file to analyze')
     args = parser.parse_args()
-
+    
+    # If called with --generate-subprocess, actually run the training and exit
+    if args.generate_subprocess:
+        model = train_and_generate(size=50)
+        # Make sure to save the model!
+        with open('synthetic_image_quality_model_arg.pkl', 'wb') as f:
+            pickle.dump(model, f)
+        print("Model saved successfully")
+        sys.exit(0)
+    
     # Create a single synthetic bad image
-    bad_image = create_synthetic(severity='medium', seed=42, type='good')
-
+    bad_image = create_synthetic(severity='medium', seed=42, type='bad')
     # Convert to dataframe
     df = synthetic_to_dataframe(bad_image)
     print(f"Generated dataframe shape: {df.shape}")
     print(f"Channels: {[col for col in df.columns if col not in ['row', 'col']]}")
-
+    
     # Visualize
     if args.show:
         visualize_synthetic_image(bad_image)
-
+        at.display_ibw(args.file, key = ['Height'])
+        plt.show()
+    
     df = create_test_dataframe(args.file)
-
+    
     # Only train and generate if you want to make a NEW model, else import
     if args.generate:
         # Create a batch
         batch = create_batch_synthetic_images(num_images=5)
-        model = train_and_generate(size=1000)       # Set to 1000 here
-
-    with open('synthetic_image_quality_model.pkl', 'rb') as f:
+        import sys
+        start_time = time.time()
+        print("Training model in subprocess. Timer will update every second. Press Ctrl+C to cancel.")
+        proc = subprocess.Popen([sys.executable, __file__, "--generate-subprocess"])
+        try:
+            while proc.poll() is None:
+                elapsed = time.time() - start_time
+                print(f"\rElapsed time: {elapsed:.1f} seconds", end="", flush=True)
+                time.sleep(0.1)
+            elapsed = time.time() - start_time
+            print(f"\rModel training subprocess completed in {elapsed:.2f} seconds.")
+            if proc.returncode != 0:
+                print(f"Subprocess exited with code {proc.returncode}.")
+        except KeyboardInterrupt:
+            proc.terminate()
+            print("\nTraining cancelled by user.")
+    
+    with open('synthetic_image_quality_model_arg.pkl', 'rb') as f:
         model = pickle.load(f)
-
     results = check_failure_flags(df, thresholds, True, model)
     enhanced_analysis(results)
