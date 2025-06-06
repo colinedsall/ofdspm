@@ -4,7 +4,7 @@ from aespm import ibw_read
 if __name__ == "__main__":
     ml_model = train_ml_model_matched('sorted_data/bad_images', 'sorted_data/good_images', ibw_read)
 
-    file = "sorted_data/good_images/BSFO_AC_0007.ibw"
+    file = "sorted_data/good_images/Cs50MA50approx_0003.ibw"
     try:
         df = create_test_dataframe(file)
         channels = ['Height', 'Amplitude', 'Phase', 'ZSensor']
@@ -23,6 +23,6 @@ if __name__ == "__main__":
     enhanced_analysis(results)
 
     """
-    The model training needs more images.
+    The model training needs more images?
 
     """
