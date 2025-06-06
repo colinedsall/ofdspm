@@ -1,13 +1,14 @@
-"""
-Filename:       train.py
+""" synth_train.py
+Filename:       synth_train.py
 Author:         Colin Edsall
 Date:           June 6th, 2025
 Version:        2
 Description:    Combines the logic from the Jupyter notebook to create and train a XGBoostClassifier model to
-                predict the classification of any given .ibw file.
+                predict the classification of any given .ibw file. Note that this uses synthetic drawings, not real ones.
 Changelog:      Version 1:  Initial design from Jupyter notebook.
                 Version 2:  Made changes to the synthetic drawing algorithm in order to better fit the tip failure 
                             model.
+                Version 3:  Changed the name to synth_train.py from train.py to better reflect the code's functionality.
 """
 
 # Imports

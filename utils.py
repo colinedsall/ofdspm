@@ -1,7 +1,10 @@
 """ utils.py
-This Python file contains many functions derived in the simulator notebook, to be referenced later.
-
-It is important to note that these functions are as-is and may not be updated with experimentation.
+Name:           utils.py
+Author:         Colin Edsall
+Date:           June 6, 2025
+Version:        1
+Description:    This Python file contains many functions derived in the simulator notebook and referenced
+                in scripts in this repo.
 """
 
 from aespm import ibw_read
@@ -10,12 +13,15 @@ import scipy as sp
 import pandas as pd
 import matplotlib.pyplot as plt
 from spmsimu.simulator import *
+import os
 
-# Uses RandomForestsClassifier, not XGBoost for this example. Performance improvement not needed.
+"""
+Train ML model using both good and bad image files directly.
+
+Uses RandomForestsClassifier, not XGBoost for this example. Performance improvement not needed.
+"""
 def train_ml_model_matched(bad_image_files, good_image_files, ibw_read_func):
-    """
-    Train ML model using both good and bad image files directly
-    """
+
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestClassifier
@@ -227,8 +233,10 @@ def train_ml_model_matched(bad_image_files, good_image_files, ibw_read_func):
     print("Model saved as 'RandomForest_model.pkl'")
     return combined_model
 
+"""
+Wrapper class to combine model and scaler
+"""
 class ScaledModel:
-    """Wrapper class to combine model and scaler"""
     def __init__(self, model, scaler):
         self.model = model
         self.scaler = scaler
@@ -245,9 +253,8 @@ class ScaledModel:
     def feature_importances_(self):
         return self.model.feature_importances_
 
-
+# Load a trained ML model
 def load_ml_model(model_path='image_quality_model.pkl'):
-    """Load a trained ML model"""
     import pickle
     try:
         with open(model_path, 'rb') as f:
@@ -261,9 +268,8 @@ def load_ml_model(model_path='image_quality_model.pkl'):
         print(f"Error loading ML model: {e}")
         return None
 
-
+# Print detailed analysis of failure detection results
 def enhanced_analysis(results):
-    """Print detailed analysis of failure detection results - MADE DYNAMIC"""
     print("=== ENHANCED FAILURE ANALYSIS ===")
     
     print(f"Traditional failure: {results['traditional_failure']} (score: {results['traditional_failures_flagged']} of {results['traditional_failure_count']})")
@@ -294,6 +300,8 @@ def enhanced_analysis(results):
         for feature, importance in sorted_features[:8]:
             print(f"{feature}: {importance:.3f}")
 
+
+# Checks the flags created after developing thresholds, not entirely necessary for ML training
 def check_failure_flags(data_dict, thresholds, use_ml=True, ml_model=None):
     """
     Flexible version that works with any number of channels
@@ -516,8 +524,8 @@ def check_failure_flags(data_dict, thresholds, use_ml=True, ml_model=None):
     
     return results
 
-import os
 
+# Computes channel statistics as needed from passed in values (array)
 def compute_channel_stats(values):
     """Compute statistical features for a channel"""
     mean = np.mean(values)
@@ -541,6 +549,7 @@ def compute_channel_stats(values):
         'skew': skew,
     }
 
+
 def process_ibw_file(filepath):
     """Process a single IBW file and extract stats for all channels"""
     try:
@@ -557,6 +566,7 @@ def process_ibw_file(filepath):
         print(f"Error processing {filepath}: {e}")
         return None, None
 
+
 def compute_pairwise_residual_mean(data1, data2):
     """Compute mean absolute residual between two channels"""
     # Handle both numpy arrays and pandas Series
@@ -565,6 +575,7 @@ def compute_pairwise_residual_mean(data1, data2):
     if hasattr(data2, 'values'):
         data2 = data2.values
     return np.mean(np.abs(data1 - data2))
+
 
 def collect_all_stats(folder):
     """Collect statistics from all IBW files in folder"""
@@ -608,6 +619,7 @@ def collect_all_stats(folder):
     
     return stats_by_channel, pairwise_residuals, list(all_channels)
 
+
 def compute_thresholds(stats_by_channel, pairwise_residuals, percentile=90):
     """Compute thresholds for all channels and pairwise residuals"""
     thresholds = {}
@@ -633,6 +645,7 @@ def compute_thresholds(stats_by_channel, pairwise_residuals, percentile=90):
         }
     
     return thresholds
+
 
 def create_test_dataframe(file):
     """Create dataframe from IBW file with flexible channel support"""
