@@ -231,7 +231,13 @@ def train_ml_model_matched(bad_image_files, good_image_files, ibw_read_func):
         pickle.dump(combined_model, f)
     
     print("Model saved as 'RandomForest_model.pkl'")
-    return combined_model
+    return {
+        'model': combined_model,
+        'X_test': X_test,
+        'y_test': y_test,
+        'X_train': X_train,
+        'y_train': y_train
+    }
 
 """
 Wrapper class to combine model and scaler
