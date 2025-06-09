@@ -2,7 +2,7 @@
 Name:           run.py
 Author:         Colin Edsall
 Date:           June 6, 2025
-Version:        2
+Version:        3
 Description:    Python script to run and train the ML model (RandomForestClassifier) with the given sample data in the sorted_data/
                 directory.
 
@@ -11,9 +11,10 @@ Description:    Python script to run and train the ML model (RandomForestClassif
 
 Changelog:      1:  (test.py) Original file. Does not have arguments nor CLI.
                 2:  (run.py) Modified to contain some CLI and cleaned up comments.
+                3:  Changed function name to use the single output, since the dictionary output version of the train func causes issues.
 """
 
-from utils import train_ml_model_matched, enhanced_analysis, check_failure_flags, compute_thresholds, collect_all_stats, create_test_dataframe
+from utils import train_ml_model_matched_single_out, enhanced_analysis, check_failure_flags, compute_thresholds, collect_all_stats, create_test_dataframe
 from aespm import ibw_read
 import argparse
 import subprocess
@@ -25,7 +26,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Define the ML model from tools
-    ml_model = train_ml_model_matched('sorted_data/bad_images', 'sorted_data/good_images', ibw_read)
+    ml_model = train_ml_model_matched_single_out('sorted_data/bad_images', 'sorted_data/good_images', ibw_read)
 
     if args.show:
         subprocess.Popen([

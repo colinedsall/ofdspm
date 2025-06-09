@@ -240,6 +240,225 @@ def train_ml_model_matched(bad_image_files, good_image_files, ibw_read_func):
     }
 
 """
+Train ML model using both good and bad image files directly.
+
+Uses RandomForestsClassifier, not XGBoost for this example. Performance improvement not needed.
+"""
+def train_ml_model_matched_single_out(bad_image_files, good_image_files, ibw_read_func):
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import cross_val_score, train_test_split
+    from sklearn.preprocessing import StandardScaler
+    from xgboost import XGBClassifier
+    import pickle
+    import os
+    
+    print("=== TRAINING ML MODEL (MATCHED TO PREDICTION) ===")
+    
+    # Use only the 4 channels that the prediction function uses
+    target_channels = ['Height', 'Amplitude', 'Phase', 'ZSensor']
+    
+    print(f"Target channels: {target_channels}")
+    
+    # Calculate expected features: 4 stats per channel + pairwise residuals
+    num_channels = len(target_channels)
+    num_pairs = num_channels * (num_channels - 1) // 2
+    expected_features = num_channels * 4 + num_pairs
+    print(f"Expected features: {num_channels} channels * 4 stats + {num_pairs} pairs = {expected_features}")
+    
+    # Handle good image files
+    if isinstance(good_image_files, str):
+        if os.path.isdir(good_image_files):
+            good_files = [os.path.join(good_image_files, f) for f in os.listdir(good_image_files) if f.endswith('.ibw')]
+        else:
+            good_files = [good_image_files]
+    else:
+        good_files = good_image_files
+    
+    # Handle bad image files
+    if isinstance(bad_image_files, str):
+        if os.path.isdir(bad_image_files):
+            bad_files = [os.path.join(bad_image_files, f) for f in os.listdir(bad_image_files) if f.endswith('.ibw')]
+        else:
+            bad_files = [bad_image_files]
+    else:
+        bad_files = bad_image_files
+    
+    print(f"Found {len(good_files)} good image files")
+    print(f"Found {len(bad_files)} bad image files")
+    
+    # Prepare feature matrix and labels
+    X = []
+    y = []
+    
+    # Feature names for consistency
+    feature_names = []
+    for ch_name in sorted(target_channels):
+        feature_names.extend([f'{ch_name}_std', f'{ch_name}_range', f'{ch_name}_entropy', f'{ch_name}_skew'])
+    
+    # Add pairwise residual names
+    sorted_channels = sorted(target_channels)
+    for i in range(len(sorted_channels)):
+        for j in range(i + 1, len(sorted_channels)):
+            feature_names.append(f'{sorted_channels[i]}_{sorted_channels[j]}_residual')
+    
+    print(f"Feature names ({len(feature_names)}): {feature_names}")
+    
+    def extract_features_from_ibw(ibw_file, label):
+        """Extract features from an IBW file"""
+        try:
+            ibw = ibw_read_func(ibw_file)
+            
+            # Create data dictionary like check_failure_flags expects
+            data_dict = {}
+            
+            # Extract channel data based on ibw structure
+            if hasattr(ibw.data, 'shape'):
+                if len(ibw.data.shape) == 3:
+                    # Assume channels are in the 3rd dimension
+                    num_data_channels = ibw.data.shape[2]
+                    # Map to your channel names (adjust this mapping as needed)
+                    channel_mapping = ['Height', 'Amplitude', 'Phase', 'ZSensor'][:num_data_channels]
+                    
+                    for i, ch_name in enumerate(channel_mapping):
+                        if ch_name in target_channels:
+                            data_dict[ch_name] = ibw.data[:, :, i]
+                            
+                elif len(ibw.data.shape) == 2:
+                    # Single channel or needs reshaping
+                    if len(target_channels) == 1:
+                        data_dict[target_channels[0]] = ibw.data
+                    else:
+                        # Try to split into channels
+                        total_size = ibw.data.size
+                        if total_size % len(target_channels) == 0:
+                            pixels_per_channel = total_size // len(target_channels)
+                            flattened = ibw.data.flatten()
+                            for i, ch_name in enumerate(sorted(target_channels)):
+                                start_idx = i * pixels_per_channel
+                                end_idx = (i + 1) * pixels_per_channel
+                                data_dict[ch_name] = flattened[start_idx:end_idx]
+            
+            # Extract features like check_failure_flags does
+            features = []
+            
+            for ch_name in sorted(target_channels):
+                if ch_name in data_dict:
+                    channel_data = data_dict[ch_name].flatten()
+                    
+                    mean = np.mean(channel_data)
+                    std = np.std(channel_data)
+                    median = np.median(channel_data)
+                    range_val = np.ptp(channel_data)
+                    
+                    # Compute entropy
+                    hist, _ = np.histogram(channel_data, bins=256, density=True)
+                    hist = hist[hist > 0]
+                    entropy = -np.sum(hist * np.log(hist + 1e-12)) if len(hist) > 0 else 0
+                    
+                    skew = abs(mean - median)
+                    features.extend([std, range_val, entropy, skew])
+                else:
+                    # Channel not available, use zeros
+                    features.extend([0, 0, 0, 0])
+            
+            # Add pairwise residuals
+            for i in range(len(sorted_channels)):
+                for j in range(i + 1, len(sorted_channels)):
+                    ch1_name, ch2_name = sorted_channels[i], sorted_channels[j]
+                    if ch1_name in data_dict and ch2_name in data_dict:
+                        ch1_data = data_dict[ch1_name].flatten()
+                        ch2_data = data_dict[ch2_name].flatten()
+                        
+                        # Ensure same length
+                        min_len = min(len(ch1_data), len(ch2_data))
+                        residual = np.mean(np.abs(ch1_data[:min_len] - ch2_data[:min_len]))
+                        features.append(residual)
+                    else:
+                        features.append(0)
+            
+            if len(features) == expected_features:
+                X.append(features)
+                y.append(label)
+                return True
+            else:
+                print(f"Feature count mismatch for {os.path.basename(ibw_file)}: got {len(features)}, expected {expected_features}")
+                return False
+                
+        except Exception as e:
+            print(f"Failed to process {os.path.basename(ibw_file)}: {e}")
+            return False
+    
+    # Process good images (label = 0)
+    good_processed = 0
+    for good_file in good_files:
+        if extract_features_from_ibw(good_file, 0):  # 0 = good
+            good_processed += 1
+    
+    print(f"Successfully processed {good_processed} good images")
+    
+    # Process bad images (label = 1)
+    bad_processed = 0
+    for bad_file in bad_files:
+        if extract_features_from_ibw(bad_file, 1):  # 1 = bad
+            bad_processed += 1
+    
+    print(f"Successfully processed {bad_processed} bad images")
+
+    X = np.array(X)
+    y = np.array(y)
+    
+    print(f"Final training data: {len(X)} samples, {X.shape[1]} features")
+    print(f"Good images: {sum(y == 0)}, Bad images: {sum(y == 1)}")
+    
+    if len(X) == 0:
+        print("No training data available!")
+        return None
+        
+    if len(np.unique(y)) < 2:
+        print("ERROR: Need both good and bad samples for training!")
+        return None
+    
+    # Train the model
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+    model.fit(X_train_scaled, y_train)
+    
+    train_score = model.score(X_train_scaled, y_train)
+    test_score = model.score(X_test_scaled, y_test)
+    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=5)
+    
+    print(f"Training accuracy: {train_score:.3f}")
+    print(f"Test accuracy: {test_score:.3f}")
+    print(f"Cross-validation score: {cv_scores.mean():.3f} (+/- {cv_scores.std() * 2:.3f})")
+    
+    # Feature importance
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': model.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
+    print("\nTop 10 Most Important Features:")
+    print(importance_df.head(10))
+    
+    # Create combined model
+    combined_model = ScaledModel(model, scaler)
+    
+    with open('RandomForest_model.pkl', 'wb') as f:
+        pickle.dump(combined_model, f)
+    
+    print("Model saved as 'RandomForest_model.pkl'")
+    return combined_model
+
+
+"""
 Wrapper class to combine model and scaler
 """
 class ScaledModel:
@@ -686,3 +905,337 @@ def create_test_dataframe(file):
     print(f"Size (meters): {ibw.size}")
     
     return df
+
+""""
+Synthetic image creation tools.
+"""
+
+def create_synthetic(height=256, width=256, channels=['Height', 'Amplitude', 'Phase', 'ZSensor'], 
+                              severity='medium', seed=None, type='bad'):
+    """
+    Create synthetic images that replicate those from the sample set of the SFM. We can pass in the type
+    as needed, but for now (by default), it generates bad images into dataframes for training the ML.
+    
+    Parameters:
+    -----------
+    height, width : int
+        Image dimensions
+    channels : list
+        Channel names to generate
+    severity : str
+        'mild', 'medium', 'severe' - controls artifact intensity
+    seed : int
+        Random seed for reproducibility
+    """
+
+    from scipy import ndimage
+
+    if seed is not None:
+        np.random.seed(seed)
+    
+    # Severity parameters
+    severity_params = {
+        'mild': {'noise_scale': 0.5, 'line_prob': 0.025, 'gradient_strength': 0.5, 'scatter_density': 0.1},
+        'medium': {'noise_scale': 1.5, 'line_prob': 0.05, 'gradient_strength': 1.0, 'scatter_density': 0.2},
+        'severe': {'noise_scale': 2.5, 'line_prob': 0.075, 'gradient_strength': 2.0, 'scatter_density': 0.4}
+    }
+    params = severity_params[severity]
+    
+    def gradient_noise_2d(x, y):
+        """Enhanced gradient noise function that works with 2D coordinates"""
+        # Create position-dependent noise that follows curves/gradients
+        r = np.sqrt(x**2 + y**2) + 1e-6  # Avoid division by zero
+        angle = np.arctan2(y, x)
+        
+        # Multi-scale gradient noise
+        noise1 = np.random.normal(np.log(r**0.01) + np.sqrt(r/100), params['noise_scale'])
+        noise2 = np.random.normal(np.sin(angle * 3) * np.sqrt(r/50), params['noise_scale'] * 0.5)
+        
+        return noise1 + noise2
+    
+    def add_horizontal_lines(image, intensity_range=(-15, 45)):
+        """Add horizontal line artifacts at random positions"""
+        corrupted = image.copy()
+        
+        # Randomly select rows to corrupt
+        num_lines = int(height * params['line_prob'])
+        if num_lines > 0:
+            corrupted_rows = np.random.choice(height, num_lines, replace=False)
+            
+            for row in corrupted_rows:
+                # Random line characteristics
+                line_intensity = np.random.uniform(*intensity_range)
+                line_width = np.random.randint(2, 30) 
+                
+                # Add the line with some variation
+                for w in range(line_width):
+                    if row + w < height:
+                        # Add some horizontal variation to make it look more realistic
+                        variation = np.random.normal(0, 5, width)
+                        corrupted[row + w, :] += line_intensity + variation
+        
+        return corrupted
+    
+    
+    def add_scattered_noise(image, density=0.5):
+        """Add scattered high-intensity noise points"""
+        corrupted = image.copy()
+        
+        # Random scattered points
+        num_points = int(height * width * density)
+        if num_points > 0:
+            rows = np.random.randint(0, height, num_points)
+            cols = np.random.randint(0, width, num_points)
+            
+            # Random intensity spikes
+            intensities = np.random.normal(0, params['noise_scale'] * 4, num_points)
+            
+            for r, c, intensity in zip(rows, cols, intensities):
+                corrupted[r, c] += intensity
+        
+        return corrupted
+    
+    def add_gradient_drift(image):
+        x = np.linspace(-1, 1, image.shape[1])
+        y = np.linspace(-1, 1, image.shape[0])
+        X, Y = np.meshgrid(x, y)
+
+        angle = np.random.uniform(0, 2*np.pi)
+        strength = params['gradient_strength'] * np.random.uniform(0.5, 2.0)
+
+        gradient = strength * (np.cos(angle) * X + np.sin(angle) * Y) ** 3  # smoother paraboloid-like drift
+
+        return image + gradient
+    
+    def add_stripe_artifacts(image):
+        """Add periodic stripe artifacts (common in AFM)"""
+        corrupted = image.copy()
+        
+        # Random stripe parameters
+        if np.random.random() < 0.1: 
+            stripe_period = np.random.randint(1, 5)
+            stripe_direction = np.random.choice(['horizontal'])
+            stripe_amplitude = params['noise_scale'] * 5
+            
+            if stripe_direction == 'horizontal':
+                for i in range(height):
+                    if i % stripe_period < stripe_period // 2:
+                        corrupted[i, :] += stripe_amplitude * np.sin(np.linspace(0, 4*np.pi, width))
+            else:
+                for j in range(width):
+                    if j % stripe_period < stripe_period // 2:
+                        corrupted[:, j] += stripe_amplitude * np.sin(np.linspace(0, 4*np.pi, height))
+        
+        return corrupted
+    
+    def add_surface_points(image, num_points=30, min_sigma=1.5, max_sigma=4.0, amplitude_range=(0.5, 2.0)):
+        """
+        Add smooth Gaussian-like points (bumps or pits) to the image.
+        
+        Parameters:
+        -----------
+        image : np.ndarray
+            The input image to modify.
+        num_points : int
+            Number of surface features to add.
+        min_sigma, max_sigma : float
+            Range for the Gaussian standard deviation (controls size of points).
+        amplitude_range : tuple
+            Range of amplitudes for the bumps (positive or negative).
+        """
+        h, w = image.shape
+        new_image = image.copy()
+        
+        for _ in range(num_points):
+            cx, cy = np.random.randint(0, w), np.random.randint(0, h)
+            sigma = np.random.uniform(min_sigma, max_sigma)
+            amp = np.random.uniform(*amplitude_range)
+            
+            x = np.arange(w)
+            y = np.arange(h)
+            X, Y = np.meshgrid(x, y)
+            
+            gauss = amp * np.exp(-((X - cx)**2 + (Y - cy)**2) / (2 * sigma**2))
+            new_image += gauss
+        
+        return new_image
+
+    def add_hard_surface_points(image, num_points=30, min_radius=2, max_radius=10, amplitude_range=(1.0, 5.0), shape='disk'):
+        """
+        Add sharp-edged surface features to the image: disks or cones.
+        
+        Parameters:
+        -----------
+        image : np.ndarray
+            The input image to modify.
+        num_points : int
+            Number of features to add.
+        min_radius, max_radius : int
+            Radius range for the points.
+        amplitude_range : tuple
+            Height/depth range for the features.
+        shape : str
+            'disk' for flat-top bumps, 'cone' for linear sharp gradient
+        """
+        h, w = image.shape
+        new_image = image.copy()
+
+        for _ in range(num_points):
+            cx = np.random.randint(0, w)
+            cy = np.random.randint(0, h)
+            radius = np.random.randint(min_radius, max_radius)
+            amp = np.random.uniform(*amplitude_range)
+
+            x = np.arange(w)
+            y = np.arange(h)
+            X, Y = np.meshgrid(x, y)
+            r2 = (X - cx)**2 + (Y - cy)**2
+
+            if shape == 'disk':
+                mask = r2 <= radius**2
+                new_image[mask] += amp
+
+            elif shape == 'cone':
+                r = np.sqrt(r2)
+                cone = amp * (1 - r / radius)
+                cone[r > radius] = 0
+                new_image += cone
+
+        return new_image
+
+
+    
+    # Generate base images for each channel
+    results = {}
+    
+    for channel in channels:
+        # Start with a base pattern that varies by channel
+        x = np.linspace(-2, 2, width)
+        y = np.linspace(-2, 2, height)
+        X, Y = np.meshgrid(x, y)
+        
+        # Channel-specific base patterns
+        if channel == 'Height':
+            # Make a base image that mimics surface bumps or grains
+            num_blobs = 100
+            base = np.zeros((height, width))
+            for _ in range(num_blobs):
+                cx, cy = np.random.randint(0, width), np.random.randint(0, height)
+                sigma = np.random.uniform(5, 25)
+                blob = np.exp(-((X - cx/width*8 - 2)**2 + (Y - cy/height*8 - 2)**2) / (4 * (sigma/width*4)**2))
+                base += blob
+            base += 0.1 * np.random.randn(height, width)
+        elif channel == 'Amplitude':
+            base = np.exp(-(X**2 + Y**2)/4) + 0.2 * np.random.normal(0, 0.25, (height, width))
+        elif channel == 'Phase':
+            base = np.arctan2(Y, X) / np.pi + 0.2 * np.random.normal(0, 0.25, (height, width))
+        elif channel == 'ZSensor':
+            base = 0.3 * (X**2 + Y**2) + 0.25 * np.random.normal(0, 0.25, (height, width))
+        else:
+            # Generic pattern for other channels
+            base = np.random.normal(0, 0.2, (height, width))
+        
+        # Apply gradient noise
+        gradient_noise_map = np.zeros((height, width))
+        for i in range(height):
+            for j in range(width):
+                gradient_noise_map[i, j] = gradient_noise_2d(X[i, j], Y[i, j])
+        
+        # Combine base pattern with gradient noise
+        syn = base + gradient_noise_map * 1
+        
+        if type == 'bad':
+            # Add various artifacts
+            syn = add_horizontal_lines(syn)
+            # syn = add_scattered_noise(syn, params['scatter_density'])
+            # syn = add_stripe_artifacts(syn)
+            syn = add_gradient_drift(syn)
+            syn = add_surface_points(syn, num_points=250, min_sigma=5, max_sigma=75, amplitude_range=(-10, 10))
+            syn = add_hard_surface_points(syn, num_points=750, min_radius=5, max_radius=30, amplitude_range=(5, 15), shape='disk')
+            syn = add_hard_surface_points(syn, num_points=1000, min_radius=5, max_radius=15, amplitude_range=(-5, 25), shape='cone')
+
+        else:
+            # syn = add_gradient_drift(syn)
+            syn = add_surface_points(syn, num_points=250, min_sigma=5, max_sigma=75, amplitude_range=(-10, 10))
+            syn = add_hard_surface_points(syn, num_points=750, min_radius=5, max_radius=30, amplitude_range=(5, 15), shape='disk')
+            syn = add_hard_surface_points(syn, num_points=1000, min_radius=5, max_radius=15, amplitude_range=(-5, 25), shape='cone')
+
+
+        
+        # Add some smoothing to make it look more realistic
+        if np.random.random() < 0.25:
+            sigma = np.random.uniform(0.5, 1)
+            syn = ndimage.gaussian_filter(syn, sigma)
+        
+        results[channel] = syn
+    
+    return results
+
+def synthetic_to_dataframe(image_dict, flatten=True):
+    """Convert synthetic bad image dictionary to dataframe format"""
+    height, width = next(iter(image_dict.values())).shape
+    
+    data = []
+    for i in range(height):
+        for j in range(width):
+            row_data = {'row': i, 'col': j}
+            for channel, image in image_dict.items():
+                row_data[channel] = image[i, j]
+            data.append(row_data)
+    
+    df = pd.DataFrame(data)
+    
+    if flatten:
+        for channel in image_dict.keys():
+            df[channel] = image_dict[channel].flatten()
+    
+    return df
+
+def create_batch_synthetic_images(num_images=10, set_type='bad'):
+    """Create a batch of synthetic bad images with varying characteristics"""
+    batch = []
+    severities = ['mild', 'medium', 'severe']
+    
+    for i in range(num_images):
+        # Vary parameters for each image
+        severity = np.random.choice(severities)
+        seed = np.random.randint(0, 10000)
+        
+        # Randomly vary dimensions slightly
+        h = np.random.randint(200, 300)
+        w = np.random.randint(200, 300)
+        
+        image_dict = create_synthetic(
+            height=h, width=w, 
+            severity=severity, 
+            seed=seed,
+            type=set_type 
+        )
+        
+        df = synthetic_to_dataframe(image_dict)
+        batch.append({
+            'dataframe': df,
+            'image_dict': image_dict,
+            'metadata': {'severity': severity, 'seed': seed, 'dimensions': (h, w)}
+        })
+    
+    return batch
+
+def visualize_synthetic_image(image_dict, title_prefix="Synthetic Generated"):
+    num_channels = len(image_dict)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.flatten()
+    
+    for idx, (channel, image) in enumerate(image_dict.items()):
+        if idx < 4:  # Only show first 4 channels
+            im = axes[idx].imshow(image, cmap='viridis', aspect='equal')
+            axes[idx].set_title(f'{title_prefix} - {channel}')
+            axes[idx].axis('off')
+            plt.colorbar(im, ax=axes[idx], shrink=0.6)
+    
+    # Hide unused subplots
+    for idx in range(len(image_dict), 4):
+        axes[idx].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
