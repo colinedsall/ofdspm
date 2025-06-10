@@ -1425,10 +1425,10 @@ def classify_file(features_list, filename):
 
     # Define thresholds
     thresholds = {
-        'Height': {'mae_max': 2e-8, 'corr_min': 0.7, 'corr_sign': 1},
+        'Height': {'mae_max': 3e-8, 'corr_min': 0.6, 'corr_sign': 1},
         'Amplitude': {'corr_min': 0.6, 'corr_sign': -1},
         'Phase': {'corr_min': 0.6, 'corr_sign': 1},
-        'ZSensor': {'mae_max': 2e-8, 'corr_min': 0.7, 'corr_sign': 1}
+        'ZSensor': {'mae_max': 3e-8, 'corr_min': 0.6, 'corr_sign': 1}
     }
 
     # Check criteria
@@ -2288,6 +2288,22 @@ def plot_trace_retrace(traces, scan_size_um, param_index=-1, repeat_index=-1, ch
         ax[i].set_xlabel('Distance (μm)')
         ax[i].set_ylabel('Signal')
         ax[i].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+def view_topo_from_pickle(file_name):
+    with open(file_name, 'rb') as fopen:
+        obj = pickle.load(fopen)
+
+    topo = obj['topo']
+    titles = ['Height', 'Amplitude', 'Phase', 'ZSensor']
+    fig, ax = plt.subplots(1, 4, figsize=[12, 2.5])
+    for i in range(4):
+        # Use topo.data[i] to access each channel directly
+        im = ax[i].imshow(topo.data[i], origin='lower')
+        ax[i].set_title(titles[i])
+        plt.colorbar(im, ax=ax[i])
 
     plt.tight_layout()
     plt.show()
