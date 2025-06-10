@@ -515,3 +515,19 @@ Instead of working at the direct image level (where traces and retraces) are com
 The notebook, `trace_retrace.ipynb` contains this exploration of using metrics from the trace and retrace data to train and test ML models. These models are also benchmarked, though it appears the dataset is too small for there to be any clear winner.
 
 The script `trace_run.py` also contains a CLI for user input, allowing the user run the training and testing, as well as view sample outputs from any `.pickle` file given for prediction.
+
+Below is a sample output:
+<p align="center">
+  <img src="images/trace_retrace/sample.png" width="1000" />
+</p>
+
+
+```
+Extracted 55 features from file
+Available features: ['Height_corr', 'Height_mae', 'Height_max_err', 'Height_std_residual', 'Height_area_diff', 'Height_entropy', 'Height_skew', 'Height_kurtosis', 'Height_std_fwd', 'Height_range_fwd', 'Amplitude_corr', 'Amplitude_mae', 'Amplitude_max_err', 'Amplitude_std_residual', 'Amplitude_area_diff', 'Amplitude_entropy', 'Amplitude_skew', 'Amplitude_kurtosis', 'Amplitude_std_fwd', 'Amplitude_range_fwd', 'Phase_corr', 'Phase_mae', 'Phase_max_err', 'Phase_std_residual', 'Phase_area_diff', 'Phase_entropy', 'Phase_skew', 'Phase_kurtosis', 'Phase_std_fwd', 'Phase_range_fwd', 'ZSensor_corr', 'ZSensor_mae', 'ZSensor_max_err', 'ZSensor_std_residual', 'ZSensor_area_diff', 'ZSensor_entropy', 'ZSensor_skew', 'ZSensor_kurtosis', 'ZSensor_std_fwd', 'ZSensor_range_fwd', 'drive', 'setpoint', 'I_gain', 'Height_ZSensor_residual_corr', 'Amplitude_Height_residual_corr', 'Amplitude_Phase_residual_corr', 'Phase_ZSensor_residual_corr', 'topo_Height_mean', 'topo_Height_std', 'topo_Amplitude_mean', 'topo_Amplitude_std', 'topo_Phase_mean', 'topo_Phase_std', 'topo_ZSensor_mean', 'topo_ZSensor_std']
+Model expects 55 features (no feature names available)
+Final feature vector shape: (1, 55)
+Prediction: Good (confidence: 0.910)
+```
+
+What is considered "good" versus "bad" is still arbitrarily set with various thresholds in order to make training sets. This points us at finding special metrics to identify possible failures in the tip in real time.
