@@ -2307,3 +2307,7 @@ def view_topo_from_pickle(file_name):
 
     plt.tight_layout()
     plt.show()
+
+    """
+    For finalized product, seek further documentation or splitting up this utility module.
+    """

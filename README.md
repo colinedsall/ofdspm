@@ -26,18 +26,6 @@ This repository contains a main Jupyter notebook, `simulator.ipnyb`, which outli
 
 Data is taken from `.ibw` files and placed into **pandas DataFrames** to be analyzed by the ML algorithm. Currently, the algorithm chosen is **RandomForestClassifier**, specifically chosen for its accuracy from experimentation and efficiency. The synthesis script uses **XGBoostClassifier** as its model because of the large synthesized training set.
 
-### List of Files/Folders
-+ `images/`   (folder): Images folder for documentation/readme.md
-+ `sample_data/`  (folder): Given `.ibw` files, unsorted/cleaned.
-+ `sorted_data/`  (folder):   Manually-sorted `.ibw` files, cleaned.
-+ `RandomForest_model.pkl`    (ML model): Pickled ML model from the most recent sample training.
-+ `synthetic_image_quality_model.pkl` (ML model): Pickled ML model from the most recent synthetic training.
-+ `requirements.txt`    (text): Requirements file for external libs.
-+ `simulator.ipynb` (Jupyter notebook): As referenced above, contains the main development workflow.
-+ `test.py` (script):   Test script for training and testing a model with real images (no CLI).
-+ `train.py` (script):  Used for training a synthetic ML model for testing with real images (contains CLI).
-+ `utils.py` (module):  Contains shared utility functions used for feature extraction, residuals, and statistics.
-
 ## Methodology
 The method by which a ML algorithm is trained and tested for several source files varies by the type of model created. For real images, a RandomForestClassifier model is chosen for its experimental accuracy and ease. For synthesized images, the XGBooostClassifier algorithm is used instead.
 
@@ -513,3 +501,17 @@ OVERALL FAILURE: False
 The ML is fairly confident with detecting good images. This is likely explained by the current testing set, because most of the images given are "good images."
 
 The average score from these images is **0.013**. We should likely explore the ML's ability to detect more "difficult-to-see" good images.
+
+## Benchmarking Models
+To benchmark various models using an AUC - ROC curve, the script in `benchmark.ipynb` is able to take any given model and test/train set to create benchmark statistics and identify the accuracy of the model on a test set. Though the current data sets that the repository is working with are small, it is possible that if the data fed into these algorithms is increased, we can successfully identify the best model and the metrics that cause failures.
+
+Refer to the code in `utils.py` (utility module) for the functions used to determine the scores and metrics from this process.
+
+## Using Trace and Retrace Data to Train Models
+Instead of working at the direct image level (where traces and retraces) are combined, we can instead focus on using discrepancies among the trace and retrace data to identify faults.
+
+**Though this is a predecessor to real-time image processing with traces and retraces**, it is still possible to get much more accurate results from statistical issues within the traces and retraces, especially as we gradually move to creating models that can be fed predictors instead of an entire set of data.
+
+The notebook, `trace_retrace.ipynb` contains this exploration of using metrics from the trace and retrace data to train and test ML models. These models are also benchmarked, though it appears the dataset is too small for there to be any clear winner.
+
+The script `trace_run.py` also contains a CLI for user input, allowing the user run the training and testing, as well as view sample outputs from any `.pickle` file given for prediction.
