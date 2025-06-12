@@ -1538,7 +1538,7 @@ def train_models_on_features(X, y, models_to_train='all'):
     from sklearn.svm import SVC
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import cross_val_score, train_test_split
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import StandardScaler, LabelEncoder
     from sklearn.metrics import classification_report, confusion_matrix
     from xgboost import XGBClassifier
     import pickle
@@ -1564,19 +1564,14 @@ def train_models_on_features(X, y, models_to_train='all'):
     
     print(f"Training models: {list(models_to_use.keys())}")
     
-    # Convert to numpy arrays if needed
-    if isinstance(X, pd.DataFrame):
-        feature_names = list(X.columns)
-        X = X.values
-    else:
-        feature_names = [f'feature_{i}' for i in range(X.shape[1])]
+    # Convert to DataFrame if needed for easier processing
+    if not isinstance(X, pd.DataFrame):
+        X = pd.DataFrame(X)
     
-    X = np.array(X)
     y = np.array(y)
     
     print(f"Training data: {len(X)} samples, {X.shape[1]} features")
     print(f"Good samples: {sum(y == 1)}, Bad samples: {sum(y == 0)}")
-    print(f"Feature names ({len(feature_names)}): {feature_names[:10]}{'...' if len(feature_names) > 10 else ''}")
     
     if len(X) == 0:
         print("No training data available!")
@@ -1585,16 +1580,52 @@ def train_models_on_features(X, y, models_to_train='all'):
     if len(np.unique(y)) < 2:
         print("ERROR: Need both good and bad samples for training!")
         return None
+
+    # FIXED: Proper handling of mixed data types
+    print("Processing mixed data types...")
     
-    # Handle NaN values
-    if np.isnan(X).any():
-        print("Warning: Found NaN values in features. Filling with median values.")
+    # Store original feature names
+    original_feature_names = list(X.columns)
+    
+    # Separate numeric and non-numeric columns
+    numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+    
+    print(f"Numeric features: {len(numeric_cols)}")
+    print(f"Non-numeric features: {len(non_numeric_cols)}")
+    
+    # Start with numeric columns
+    X_processed = X[numeric_cols].copy()
+    
+    # Handle non-numeric columns (encode categorical variables)
+    label_encoders = {}
+    for col in non_numeric_cols:
+        print(f"Encoding categorical feature: {col}")
+        le = LabelEncoder()
+        # Handle NaN values in categorical columns
+        X_cat = X[col].fillna('missing')
+        X_processed[col] = le.fit_transform(X_cat.astype(str))
+        label_encoders[col] = le
+    
+    # Now handle NaN values in numeric columns only
+    if X_processed.select_dtypes(include=[np.number]).isnull().any().any():
+        print("Warning: Found NaN values in numeric features. Filling with median values.")
         from sklearn.impute import SimpleImputer
+        
+        # Only impute numeric columns
+        numeric_cols_final = X_processed.select_dtypes(include=[np.number]).columns
         imputer = SimpleImputer(strategy='median')
-        X = imputer.fit_transform(X)
+        X_processed[numeric_cols_final] = imputer.fit_transform(X_processed[numeric_cols_final])
+    
+    # Convert to numpy array
+    X_final = X_processed.values.astype(float)
+    feature_names = list(X_processed.columns)
+    
+    print(f"Final processed features: {X_final.shape[1]}")
+    print(f"Sample feature names: {feature_names[:10]}{'...' if len(feature_names) > 10 else ''}")
     
     # Split data once for all models
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X_final, y, test_size=0.2, random_state=42, stratify=y)
     
     # Scale data once
     scaler = StandardScaler()
@@ -1650,8 +1681,8 @@ def train_models_on_features(X, y, models_to_train='all'):
             'CV_Score_Std': cv_std
         })
         
-        # Create combined model with scaler
-        combined_model = ScaledModel(model, scaler)
+        # Create combined model with scaler and encoders
+        combined_model = ScaledModelWithEncoders(model, scaler, label_encoders, feature_names, numeric_cols, non_numeric_cols)
         trained_models[model_name] = combined_model
         
         # Save individual model in trace_models folder
@@ -1692,6 +1723,10 @@ def train_models_on_features(X, y, models_to_train='all'):
         pickle.dump({
             'results_summary': results_df,
             'feature_names': feature_names,
+            'original_feature_names': original_feature_names,
+            'label_encoders': label_encoders,
+            'numeric_cols': numeric_cols,
+            'non_numeric_cols': non_numeric_cols,
             'X_train': X_train,
             'X_test': X_test,
             'y_train': y_train,
@@ -1708,8 +1743,71 @@ def train_models_on_features(X, y, models_to_train='all'):
         'y_train': y_train,
         'y_test': y_test,
         'scaler': scaler,
-        'feature_names': feature_names
+        'feature_names': feature_names,
+        'label_encoders': label_encoders
     }
+
+
+class ScaledModelWithEncoders:
+    """
+    Wrapper class that combines a trained model with its scaler and label encoders
+    for easy prediction on new data with mixed types
+    """
+    def __init__(self, model, scaler, label_encoders, feature_names, numeric_cols, non_numeric_cols):
+        self.model = model
+        self.scaler = scaler
+        self.label_encoders = label_encoders
+        self.feature_names = feature_names
+        self.numeric_cols = numeric_cols
+        self.non_numeric_cols = non_numeric_cols
+    
+    def predict(self, X):
+        """Predict on new data, handling encoding and scaling"""
+        X_processed = self._preprocess(X)
+        X_scaled = self.scaler.transform(X_processed)
+        return self.model.predict(X_scaled)
+    
+    def predict_proba(self, X):
+        """Predict probabilities on new data"""
+        X_processed = self._preprocess(X)
+        X_scaled = self.scaler.transform(X_processed)
+        return self.model.predict_proba(X_scaled)
+    
+    def _preprocess(self, X):
+        """Preprocess new data using the same transformations as training"""
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X, columns=self.feature_names)
+        
+        # Start with numeric columns
+        X_processed = X[self.numeric_cols].copy()
+        
+        # Apply label encoders to categorical columns
+        for col in self.non_numeric_cols:
+            if col in X.columns:
+                # Handle unseen categories
+                X_cat = X[col].fillna('missing').astype(str)
+                
+                # Transform known categories, assign -1 for unknown
+                encoded_values = []
+                for val in X_cat:
+                    if val in self.label_encoders[col].classes_:
+                        encoded_values.append(self.label_encoders[col].transform([val])[0])
+                    else:
+                        # Assign a default value for unseen categories
+                        encoded_values.append(-1)
+                
+                X_processed[col] = encoded_values
+        
+        # Handle missing values
+        if X_processed.isnull().any().any():
+            from sklearn.impute import SimpleImputer
+            imputer = SimpleImputer(strategy='median')
+            X_processed = pd.DataFrame(
+                imputer.fit_transform(X_processed), 
+                columns=X_processed.columns
+            )
+        
+        return X_processed.values.astype(float)
 
 
 class ScaledModel:
