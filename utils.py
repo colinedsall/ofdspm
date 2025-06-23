@@ -2409,3 +2409,310 @@ def view_topo_from_pickle(file_name):
     """
     For finalized product, seek further documentation or splitting up this utility module.
     """
+
+
+    """
+Adaptation of the API to handle this data case:
+
+Each given sample image contains 8 channels (4 with trace and retrace), of which we need to fix some
+functions to work with their name scheme.
+"""
+
+from igor2 import binarywave as bw
+import numpy as np
+
+def load_ibw(file, ss=False):
+    '''
+    Load the ibw file as an IBWData object.
+
+    Input:
+        file     - String: path to the ibw file
+        ss         - Boolean: if True then the ibw file will be treated as domain switching
+                 spectroscopy file.
+    Output:
+        IBWData object:
+        self.z          - Numpy array: 2D numpy array containing topography channel. 
+                         Default is the "Height" channel.
+        self.size       - float: Map size in the unit of meter
+        self.mode        - String: Imaging mode. Currently support "AC Mode", "Contact Mode", "PFM Mode"
+                         "SS Mode" and "DART Mode".
+        self.header     - Dict: All the setup information.
+        self.channels   - list: List of channel names
+        self.data       - Numpy array: An array of all the saved image data in this ibw file in
+                         the same order as self.channels
+    Examples:
+        
+    '''
+    
+    # Return an IBWData object
+    return IBWData(file, ss=ss)
+
+class IBWData(object):
+    '''
+    Data structure for AR IBW maps.
+
+    Attributes:
+        self.z          - Numpy array: 2D numpy array containing topography channel. 
+                         Default is the "Height" channel.
+        self.size       - float: Map size in the unit of meter
+        self.mode        - String: Imaging mode. Currently support "AC Mode", "Contact Mode", "PFM Mode"
+                         "Spec" and "DART Mode".
+        self.header     - Dict: All the setup information.
+        self.channels   - list: List of channel names
+        self.data       - Numpy array: An array of all the saved image data in this ibw file in
+                         the same order as self.channels
+        
+    Methods:
+        None
+    '''
+    def __init__(self, path, ss=False):
+        super(IBWData, self).__init__()
+
+        self._load_ibw(path)
+
+        # Spectroscopy files:
+        if ss == True:
+            self.mode = "Spec"
+            try:
+                self._load_ss()
+            except IndexError:
+                pass
+        elif "ARDoIVCurve" in self.header:
+            self.mode = "Spec"
+            try:
+                self._load_ss()
+            except IndexError:
+                pass
+        # Image files:
+        else:
+            try:
+                self.size = self.header['ScanSize']
+                self.mode = self.header['ImagingMode']
+                z_index = self.channels.index('Height')
+                self.z = self.data[z_index]
+                
+                try:
+                    # Separate DART mode from general PFM mode
+                    if self.mode == "PFM Mode" or self.mode == "AC Mode":
+                        if len(self.channels) > 4 and len(self.channels) < 8:
+                            self.mode = "DART Mode"
+                            self.channels = ['Height', 'Amplitude1', 'Amplitude2', 'Phase1', 'Phase2', 'Frequency']
+                        elif len(self.channels) > 7:
+                            self.channels = ['Height (T)', 'Height (RT)', 'Amplitude (T)', 'Amplitude (RT)',
+                                            'Phase (T)', 'Phase (RT)', 'ZSensor (T)', 'ZSensor (RT)']
+                        else:
+                            self.channels = ['Height', 'Amplitude', 'Deflection', 'Phase']
+                except IndexError:
+                    pass
+            except KeyError:
+                pass
+
+    def _load_ibw(self, path):
+
+        t = bw.load(path)
+        wave = t.get('wave')
+
+        # Decode the notes section to parse the header
+        if isinstance(wave['note'], bytes):
+            try:
+                parsed_string = wave['note'].decode('utf-8').split('\r')
+            except:
+                parsed_string = wave['note'].decode('ISO-8859-1').split('\r')
+
+        # Load the header
+        self.header = {}
+
+        for item in parsed_string:
+            try:
+                key, value = item.split(':', 1)
+                value = value.strip()  # Remove leading/trailing whitespace
+            except ValueError:
+                continue  # For items that do not split correctly
+
+            # Determine the data type of the value and convert
+            if '.' in value or 'e' in value:  # Floating point check
+                try:
+                    self.header[key] = float(value)
+                except ValueError:
+                    self.header[key] = value
+            elif value.lstrip('-').isdigit():  # Integer check
+                self.header[key] = int(value)
+            else:
+                self.header[key] = value
+
+        # Load the data
+        # Transpose the data matrix
+        self.data = wave['wData'].T
+        # data = wave['wData']
+
+        # Load the channel names
+        self.channels = [self.header.get(f'Channel{i+1}DataType', 'Unknown') for i in range(np.shape(self.data)[0])]
+
+    def _load_ss(self, nan=True, drop=0.1):
+
+        if nan is True:
+            bias_raw= self.data[-1]
+            index_not_nan = np.where(~np.isnan(bias_raw))
+
+            bias = bias_raw[index_not_nan]
+            amp1, amp2, phase1, phase2, freq = self.data[1][index_not_nan], self.data[2][index_not_nan], self.data[3][index_not_nan], \
+                        self.data[4][index_not_nan], self.data[5][index_not_nan]
+        else:
+            bias = self.data[-1]
+            amp1 = self.data[1]
+            amp2 = self.data[2]
+            phase1 = self.data[3]
+            phase2 = self.data[4]
+            freq = self.data[5]
+
+        #Correcting first without offset to calculate the drive parameters
+        phase1 = self._correct_phase_wrapping(phase1, offset_correction=False)
+        phase2 = self._correct_phase_wrapping(phase2, offset_correction=False)
+
+        df = self.header['DFRTFrequencyWidth']
+
+        a_dr, ph_dr, q = self._calc_drive_params(amp1, amp2, phase1/180*np.pi, phase2/180*np.pi, freq, df)
+
+        phase1 = self._correct_phase_wrapping(phase1)
+        phase2 = self._correct_phase_wrapping(phase2)
+        ph_dr  = self._correct_phase_wrapping(ph_dr/np.pi*180)
+
+        # Let's count how many times the bias has changed (on->off, off->on)
+        index_bp = np.where(np.diff(bias) != 0)[0] + 1
+        # We define the width of applied voltage by the first non-zero voltage plateau
+        index_delta = index_bp[1] - index_bp[0]
+        # We drop the first segment of zero bias signals as this is the initial settling time
+        index_bp = np.concatenate([[index_bp[0]-index_delta], index_bp])
+
+        # Output array length
+        length = len(index_bp) // 2
+
+        bias_on, bias_off = np.zeros(length), np.zeros(length)
+
+        phase1_on,phase1_off = np.zeros(length), np.zeros(length)
+        phase2_on, phase2_off  = np.zeros(length), np.zeros(length)
+        amp_on, amp_off = np.zeros(length), np.zeros(length)
+        amp1_on, amp1_off = np.zeros(length), np.zeros(length)
+        amp2_on, amp2_off = np.zeros(length), np.zeros(length)
+        freq_on, freq_off = np.zeros(length), np.zeros(length)
+
+        amp_dr_on, amp_dr_off = np.zeros(length), np.zeros(length)
+        phase_dr_on, phase_dr_off = np.zeros(length), np.zeros(length)
+        q_on, q_off = np.zeros(length), np.zeros(length)
+
+        # We drop the first and last 10% data to avoid oscillation after bias change (10% settling time)
+        skip = int(drop * index_delta)
+        
+        for i in range(length * 2-1):
+            start = index_bp[i] + skip
+            end = index_bp[i+1] - skip
+            if i % 2 == 0: # bias off
+                phase1_off[i//2] = np.mean(phase1[start:end])
+                phase2_off[i//2] = np.mean(phase2[start:end])
+                amp1_off[i//2] = np.mean(amp1[start:end])
+                amp2_off[i//2] = np.mean(amp2[start:end])
+                freq_off[i//2] = np.mean(freq[start:end])
+                bias_off[i//2] = np.mean(bias[start:end])
+
+                phase_dr_off[i // 2] = np.mean(ph_dr[start:end])
+                q_off[i // 2] = np.mean(q[start:end])
+                amp_dr_off[i // 2] = np.mean(a_dr[start:end])
+
+            else:
+                bias_on[i//2] = np.mean(bias[start:end])
+                phase1_on[i//2] = np.mean(phase1[start:end])
+                phase2_on[i//2] = np.mean(phase2[start:end])
+                amp1_on[i//2] = np.mean(amp1[start:end])
+                amp2_on[i//2] = np.mean(amp2[start:end])
+                freq_on[i//2] = np.mean(freq[start:end])
+
+                phase_dr_on[i // 2] = np.mean(ph_dr[start:end])
+                q_on[i // 2] = np.mean(q[start:end])
+                amp_dr_on[i // 2] = np.mean(a_dr[start:end])
+
+        self.bias = bias_on
+        self.phase1_on = phase1_on
+        self.phase1_off = phase1_off
+        self.phase2_on = phase2_on
+        self.phase2_off = phase2_off
+        self.freq_on = freq_on
+        self.freq_off = freq_off
+        self.amp_on = amp1_on
+        self.amp_off = amp1_off
+        self.amp1_on = amp1_on
+        self.amp1_off = amp1_off
+        self.amp2_on = amp2_on
+        self.amp2_off = amp2_off
+        self.x_on = amp_on * np.cos(phase1_on/180*np.pi)
+        self.x_off = amp_off * np.cos(phase1_off / 180 * np.pi)
+
+        self.amp_dr_on = amp_dr_on
+        self.amp_dr_off = amp_dr_off
+        self.x_dr_on = amp_dr_on * np.cos(phase_dr_on / 180 * np.pi)
+        self.x_dr_off = amp_dr_off * np.cos(phase_dr_off / 180 * np.pi)
+        self.phase_dr_on = phase_dr_on
+        self.phase_dr_off = phase_dr_off
+        self.q_on = q_on
+        self.q_off = q_off
+
+        # return bias[1:], amp_off[1:], phase1_off[1:], phase2_off[1:]
+
+    def _correct_phase_wrapping(self, ph, lower=-90, upper=270, offset_correction=True):
+        '''
+        Correct the phase wrapping in Jupiter.
+        
+        Input:
+            Ph     - Array: array of phase values
+            lower - float: lower bound of phase limit in your instrument
+            upper - float: upper bound of phase limit in your instrument
+        Output:
+            ph_shift - Array: phase with wrapping corrected
+        '''
+        # Use the phase value measured at last pixel as the offset in the lock-in
+        if offset_correction:
+            ph_shift = ph - ph[-1]
+        else:
+            ph_shift = ph
+
+        index_upper = np.where(ph_shift > upper)
+        index_lower = np.where(ph_shift < lower)
+        ph_shift[index_upper] -= 360
+        ph_shift[index_lower] += 360
+
+        return ph_shift
+
+    @staticmethod
+    def _calc_drive_params(_a1, _a2, _ph1, _ph2, _fc, _df):
+        '''
+        Calculate real Dart parameters from the observables.
+
+        Input:
+            _a1  - amplitude 1
+            _a2  - amplitude 2
+            _ph1 - phase 1
+            _ph2 - phase 2
+            _fc  - resonance frequency
+            _df  - difference between freq 2 and freq 1
+        Output:
+            _a_drive  - drive amplitude
+            _ph_drive - resonance phase
+            _q        - resonanse quality factor
+        '''
+
+        epsilon = 1e-10  # a small adding for calculation stability
+        _dph = _ph2 - _ph1
+        _f1 = _fc - _df / 2
+        _f2 = _fc + _df / 2
+
+        _om = _f1 * _a1 / (_f2 * _a2)
+        _fi = np.tan(_dph)
+
+        _x1 = -(1 - np.sign(_fi) * np.sqrt(1 + np.square(_fi)) / _om) / (_fi + epsilon)
+        _x2 = (1 - np.sign(_fi) * np.sqrt(1 + np.square(_fi)) * _om) / (_fi + epsilon)
+
+        _q = np.sqrt(_f1 * _f2 * (_f2 * _x1 - _f1 * _x2) * (_f1 * _x1 - _f2 * _x2)) / (np.square(_f2) - np.square(_f1))
+        _q[_q > 1000] = 1000
+        _a_drive = _a1 * np.sqrt((_fc**2 - _f1**2)**2 +(_fc * _f1 / _q)**2) / np.square(_fc)
+        _ph_drive = _ph1 - np.arctan(_fc * _f1 / (_q * (np.square(_fc) - np.square(_f1))))
+
+        return _a_drive, _ph_drive, _q
