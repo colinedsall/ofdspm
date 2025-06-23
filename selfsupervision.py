@@ -773,6 +773,8 @@ def compute_reward(ibw_data, scan_index=0, normalize_rewards=True):
     height_retrace = ibw_data.data[ch_names.index('Height (RT)')]
     phase_trace = ibw_data.data[ch_names.index('Phase (T)')] 
     phase_retrace = ibw_data.data[ch_names.index('Phase (RT)')]
+
+    # We solely use the height/phase and trace retrace data to make this reward focus for the training.
     
     # Extract scan rate
     scan_rate = ibw_data.header.get('ScanRate', 1.0)
@@ -805,48 +807,44 @@ def compute_reward(ibw_data, scan_index=0, normalize_rewards=True):
     else:
         rewards['phase_consistency'] = 0.0
     
-    # 3. Image Sharpness/Focus (using gradient variance)
-    height_gradients = np.gradient(height_trace)
-    gradient_variance = np.var(height_gradients)
-    # Normalize and convert to 0-1 score
-    rewards['sharpness'] = np.tanh(gradient_variance / 1000.0)  # Adjust scaling as needed
+    # # 3. Image Sharpness/Focus (using gradient variance)
+    # height_gradients = np.gradient(height_trace)
+    # gradient_variance = np.var(height_gradients)
+    # # Normalize and convert to 0-1 score
+    # rewards['sharpness'] = np.tanh(gradient_variance / 1000.0)  # Adjust scaling as needed
     
-    # 4. Signal-to-Noise Ratio
-    height_signal = np.mean(height_trace)
-    height_noise = np.std(height_trace)
-    if height_noise > 0:
-        snr = abs(height_signal) / height_noise
-        rewards['snr'] = np.tanh(snr / 10.0)  # Normalize SNR
-    else:
-        rewards['snr'] = 1.0
+    # # 4. Signal-to-Noise Ratio
+    # height_signal = np.mean(height_trace)
+    # height_noise = np.std(height_trace)
+    # if height_noise > 0:
+    #     snr = abs(height_signal) / height_noise
+    #     rewards['snr'] = np.tanh(snr / 10.0)  # Normalize SNR
+    # else:
+    #     rewards['snr'] = 1.0
     
     # 5. Data Quality (check for artifacts, saturation, etc.)
-    # Detect if data is clipped/saturated
-    height_flat = height_trace.flatten()
-    unique_values = len(np.unique(height_flat))
-    total_pixels = len(height_flat)
-    diversity_ratio = unique_values / total_pixels
-    rewards['data_diversity'] = min(diversity_ratio * 10, 1.0)  # Scale to 0-1
+    # # Detect if data is clipped/saturated
+    # height_flat = height_trace.flatten()
+    # unique_values = len(np.unique(height_flat))
+    # total_pixels = len(height_flat)
+    # diversity_ratio = unique_values / total_pixels
+    # rewards['data_diversity'] = min(diversity_ratio * 10, 1.0)  # Scale to 0-1
     
     # 6. Scan Index Penalty (prefer earlier scans, indicating tip quality)
     # Use exponential decay instead of linear
     max_expected_scans = 35  # Adjust based on your typical experiment
     rewards['tip_freshness'] = np.exp(-scan_index / max_expected_scans)
     
-    # 7. Scan Rate Appropriateness (if you have an optimal range)
-    optimal_scan_rate = 2.0  # Hz, adjust based on your system
-    scan_rate_penalty = abs(scan_rate - optimal_scan_rate) / optimal_scan_rate
-    rewards['scan_rate'] = np.exp(-scan_rate_penalty)
+    # # 7. Scan Rate Appropriateness (if you have an optimal range)
+    # optimal_scan_rate = 2.0  # Hz, adjust based on your system
+    # scan_rate_penalty = abs(scan_rate - optimal_scan_rate) / optimal_scan_rate
+    # rewards['scan_rate'] = np.exp(-scan_rate_penalty)
     
     # Combine rewards with learned or heuristic weights
     weights = {
         'height_consistency': 0.25,
         'phase_consistency': 0.25, 
-        'sharpness': 0.15,
-        'snr': 0.15,
-        'data_diversity': 0.1,
-        'tip_freshness': 0.08,
-        'scan_rate': 0.02
+        'tip_freshness': 0.08
     }
     
     # Weighted combination
