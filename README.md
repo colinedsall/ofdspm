@@ -531,3 +531,141 @@ Prediction: Good (confidence: 0.910)
 ```
 
 What is considered "good" versus "bad" is still arbitrarily set with various thresholds in order to make training sets. This points us at finding special metrics to identify possible failures in the tip in real time.
+
+## Self-Supervised Image Detection Models
+This section focuses on improving both the accuracy and real-time capabilities of this project in that we will use real experimental data to train either pre-trained CNNs or develop an encoder based on augmented images from the experiment.
+
+The experiment ran included purposefully damaging the tip by gradually decreasing the setpoint so that the tip endures more pressure. The intent is that the data will reflect the changes in the tip to the extent that some classifier model can understand the relationship between visual image quality and the relationships with data.
+
+### Methodology
+Two models will be trained and analyzed based on specific design criteria. The models will be fed images (raw, RGB image data, cropped and/or augmneted), to train on feature detection. A reward-based, minimization of loss training program will be run on these problems to use a physics-based reward function derived and weighted exeprimentally.
+
+#### **Reward Function**
++ **Height Consistency** (Trace vs Retrace) - MAE between two values
++ **Phase Consistency** (Trace vs Retrace) - MSE between values
++ **Image Sharpness/Focus** (using gradient variance, for the CNN's image training)
++ **Signal-to-Noise Ratio of Height** (SNR, for the CNN's features training)
++ **Data Quality** (check for artifacts, clips, or excess saturation)
++ **Scan Index Penalty** (prefer earlier scans, indicating tip quality based on experiment)
++ **Scan Rate Appropriateness** (if outside of the set range of 2Hz)
+
+```
+weights = {
+        'height_consistency': 0.25,
+        'phase_consistency': 0.25, 
+        'sharpness': 0.15,
+        'snr': 0.15,
+        'data_diversity': 0.1,
+        'tip_freshness': 0.08,
+        'scan_rate': 0.02
+}
+
+    # Weighted combination
+    total_reward = sum(weights[key] * rewards[key] for key in weights.keys())
+    
+    return total_reward, rewards  # `rewards` is the dictionary of components
+```
+
+This reward function is used in both models to guide the training of a 5-class multiclass classifier model to **predict the gradual status of the tip**.
+
+#### Experiment Procedure
+The procedure of this experiment was to create arbitrary classes of tip damage based on the scan index. The goal for this is to create some defineable trend between "new" tips and "broken" tips by classifying even groups of scans in order from the first scan on a new tip to the last. The classifiers built from these images will then need to be able to identify which group, or what condition, the current image is in.
+
+The intent for this is that a smaller, sample image (86x86), can be **fed into the model during machine runtime**, which will allow the user to receive classifier information about the predicted status of the tip based on its training. This may be important to either **identify causes for failure or prevent tip failure in the current scan in real time**.
+
+#### **Model Types**
+1. **ResNet18 with ImageNetV1 weights (pretrained CNN)**. A classifier is built using these weights but the CNN is encouraged to focus on images it is not sure on depending on the reward calculated per image augment.
++ This model combines both image training (fault detection and edge detection) with a hybrid approach of self-supervised learning from loss minimization of both classification loss *and* reward loss. The goal for this hybridized approach was to allow the image-based model to train on real data and the appearance of the image (height channel), as to build some relationship with image data based on reward calculations.
+2. **Barlow Twins encoder** created from augmented (cropped, rotated) image data. A classifier is built on top of this encoder for the same classes as the pretrained CNN above.
++ This model combines the Barlow Twins approach for finding discrepancies between pairs of augmented images (height channel) and real data from the experiment to reinforce trends that may indicate the tip's condition.
+
+Both models were fed cropped images (3x3 crops from the original 256x256-point image), which will be important later for the discussion of usecases.
+
+#### Training Data
+Both models were trained locally using hardware acceleration (CUDA), of which the number of epochs and reinforcement are:
+1. **Pretrained CNN**: 4 epochs (ran into performance issues), with 5112 samples from augmented data from 71 files (72 times augmentation ratio). Training/validation batches were 256/64.
+2. **Barlow Twins**: ~350 epochs to convergence for decoder. Classifier was trained to about ~400 epochs until reaching near-convergence at 60% accuracy.
+
+Both models were trained with the same experimental dataset of 71 images (36 read-out images, 35 wear-out images.)
+
+### Analysis and Comparison
+After training, the models were put through similar analysis as mutliclass classifiers. The following trends and images describe both their accuracy as well as their performance.
+
+#### Pretrained CNN (Hybrid Model)
+**Scan Index Versus Classification**
+<p align="center">
+  <img src="images/hb/hb_1.png" width="1000" />
+</p>
+
+<p align="center">
+  <img src="images/hb/hb_2.png" width="1000" />
+</p>
+
+The model appears to be the **most confident when determining if the tip is new or damaged**, though it struggles with classification in the middle classes. A further discussion of this capability can be brought up to **use the uncertainty as a feature in order to warn the user about the tip condition**.
+
+**AUC - ROC Curves**
+<p align="center">
+  <img src="images/hb/hb_3.png" width="1000" />
+</p>
+
+```
+Per-Class AUC Scores:
+  Class 0: 0.9436
+  Class 1: 0.8083
+  Class 2: 0.6579
+  Class 3: 0.8459
+  Class 4: 0.8631
+```
+
+The AUC - ROC curve above shows that the model is **rather successful in its classification** for all classes, but it **struggles with the middle classes**, as shown above.
+
+The new-tip classification score is 0.94, and the last two classes have classification scores around 0.86.
+
+**Confusi0n Matrix**
+<p align="center">
+  <img src="images/hb/hb_4.png" width="1000" />
+</p>
+
+The confusion matrix has a clear linear trend, with many classifications at the start and finish being accurate. However, it appears as the tip becomes more damaged (i.e. classes 3-4), the model struggles to classify the tip as accurately.
+
+
+#### Barlow Twins Approach
+**Scan Index Versus Classification**
+<p align="center">
+  <img src="images/bt/bt_1.png" width="1000" />
+</p>
+
+<p align="center">
+  <img src="images/bt/bt_2.png" width="1000" />
+</p>
+
+This model appears to have a successful, linear relaitonship between the scan index and its classification after training. This may indicate that the Barlow Twins approach benefited more from the smaller training set and more epochs, but we still observe the same trend if not worse about confidence values for each classification.
+
+This model appears to **struggle to classify the middle classes, while being rather confident in its classification of the extreme classes (0 and 4)**.
+
+**AUC - ROC Curves**
+<p align="center">
+  <img src="images/bt/bt_3.png" width="1000" />
+</p>
+
+<p align="center">
+  <img src="images/bt/bt_4.png" width="1000" />
+</p>
+
+The curve here shows some interesting trend, and it relates to the incertainty shown in the above image. **The classifier is fairly good at making the correct choice for class 0 and class 4, but may perform worse than random for the middle classes.**
+
+This brings us to consider the importance of the middle classes. If the model is *uncertain* about its classification in the middle, this could indicate some working interval of the tip condition. Perhaps the certainty of the model for tip damage (class 4) could be used as a progress indicator about the tip condition and an early warning about the tip failure.
+
+**Confusion Matrix**
+<p align="center">
+  <img src="images/bt/bt_5.png" width="1000" />
+</p>
+
+The confusion matrix shows a similar trend to the hybrid approach above. The model is fairly certain about classifications at the extremes, but appears to overclassify and underclassify images in the middle (hence why it is more uncertain).
+
+### Usecase
+These models were trained using 3x3 cropped and augmented images. The goal for this approach was to:
+1. Allow the model to be trained on more samples, by splitting up the training data and augmenting images for the models to work with.
+2. Allow the user to sample the AFM tip in real-time **without having to complete a full scan**. Hence, the user can feed up to 9 samples into the model at a time and get predictions about the status of the tip during runtime. **This can be used to stop the AFM in cases where the tip may be close to breaking (classes 2-3).**
+
+Further improvements to the interface between these models and realtime data must be made, but for now the model has the capability for smaller samples of data to be used to predict the classification of the tip.
