@@ -12,7 +12,7 @@ import numpy as np
 import scipy as sp
 import pandas as pd
 import matplotlib.pyplot as plt
-from spmsimu.simulator import *
+# from spmsimu.simulator import *
 import os
 
 """
@@ -1250,13 +1250,14 @@ import numpy as np
 from scipy.stats import pearsonr
 
 # Set the folder path
-sample_folder = os.path.join('scan_traces', 'MOBO')
+                                                                # Changed to remove MOBO as it is depreciated
+# sample_folder = os.path.join('scan_traces', 'MOBO')
 
 # Get list of all .pickle files
-files = sorted([
-    os.path.join(sample_folder, f) for f in os.listdir(sample_folder)
-    if f.endswith('.pickle')
-])
+# files = sorted([
+#     # os.path.join(sample_folder, f) for f in os.listdir(sample_folder)         # Changed here
+#     if f.endswith('.pickle')
+# ])
 
 # Helper function: Compute MAE and correlation between forward and backward traces
 def compute_trace_metrics(trace_data):
