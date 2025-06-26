@@ -621,7 +621,7 @@ The AUC - ROC curve above shows that the model is **rather successful in its cla
 
 The new-tip classification score is 0.94, and the last two classes have classification scores around 0.86.
 
-**Confusi0n Matrix**
+**Confusion Matrix**
 <p align="center">
   <img src="images/hb/hb_4.png" width="1000" />
 </p>
@@ -669,3 +669,124 @@ These models were trained using 3x3 cropped and augmented images. The goal for t
 2. Allow the user to sample the AFM tip in real-time **without having to complete a full scan**. Hence, the user can feed up to 9 samples into the model at a time and get predictions about the status of the tip during runtime. **This can be used to stop the AFM in cases where the tip may be close to breaking (classes 2-3).**
 
 Further improvements to the interface between these models and realtime data must be made, but for now the model has the capability for smaller samples of data to be used to predict the classification of the tip.
+
+
+
+
+# Summary of Models and Workflow
+
+## Experimental Procedure
+The dataset used to train and evaluate models was collected from an AFM tip degradation experiment using a calibration sample. The AFM mode for this experiment was tapping mode. This sample consisted to two distinct regions:
++ Left side: a rough calibration surface used to accelerate tip wear in conjunction with decreased probe setpoint.
++ Right side: A regularly-patterned nanopillar array which was used to observe image quality over scan indices.
+<p align="center">
+  <img src="images/exp/exp1.png" width="800" />
+</p>
+Probe view of the calibration sample with regions of interest under the tip pointer.
+
+
+<p float="left">
+
+  <img src="images/exp/exp2.png" width="500" />
+  <img src="images/exp/exp3.png" width="500" />
+</p>
+
+Appearance of two regions of interest (wear region left, read region right). The boxes with checks represent the area configured to generate the 256x256 100-square micrometer images for training.
+
+The goal of this experiment is to systematically degrade the AFM tip by gradually reducing the setpoint, or by making the tip press closer to the surface during oscillation. The idea was to record the resulting effects on image quality over time for the same region on the sample, thus allowing the model to correlate image degradation patterns (especially in height and phase channels) with the gradual breakdown of the tip.
+
+Independent analysis of the images is required until the tip is finally broken.
+
+### Procedure
+1. Sample:
++ An AFM calibration sample is used containing the two regions of interest (rough and nanopillar).
+2. Trial Design:
++ Experiment is conducted until independent analysis confirms the tip has reached severe degradation. For this training set, the tip required 35 sequential trials with decreasing setpoint at a constant rate to achieve severe degradation.
+3. Image Capture:
++ Each trial captures two AFM images, a wear-out image over the rough calibration surface with decreasing setpoint and a read-out image over the nanopillar region with constant setpoint.
+4. Image Specifications:
++ Dimensions: 256x256 points/pixels.
++ Scan Size: 10 micrometers by 10 micrometers.
++ Channels: 8 channels, trace and retrace for height, amplitude, phase, and ZSensor.
++ Labeling: By index, equally divided into 5 groups.
++ Scan Rate: 2 Hz
+
+### Sample Scans
+
+<p align="center">
+  <img src="images/exp/exp4.png" width="400" />
+</p>
+Scan information, with setpoint changing solely for wear-out images.
+
+<p align="center">
+  <img src="images/exp/output2.png" width="700" />
+</p>
+
+First read-out scan with brand new tip. The appearance of the nanopillars in the image are sharp and do not suffer from any rounding.
+
+<p align="center">
+  <img src="images/exp/output3.png" width="700" />
+</p>
+
+First wear-out scan with brand new tip. Though this image does not have many discernable features for the models to learn from, it will still be fed into training to indicate changes in the trace data.
+
+<p align="center">
+  <img src="images/exp/output4.png" width="700" />
+</p>
+
+Read-out scan at index 17. Though there is not much change from the first image, trends in data may indicate that the tip is suffering some wear from this experiment.
+
+<p align="center">
+  <img src="images/exp/output5.png" width="700" />
+</p>
+
+Wear-out scan at index 17. This follows the same trend from above, but it may be noticeable that there is some noise/alterations in the phase channel.
+
+<p align="center">
+  <img src="images/exp/output6.png" width="700" />
+</p>
+
+Read-out scan at final index 35. There is clear rounding in both the height and phase channels, as well as some artifacts in the phase channel itself. This is a clear indicator of tip failure as compared to previous images.
+
+<p align="center">
+  <img src="images/exp/output7.png" width="700" />
+</p>
+
+Wear-out scan at final index 34. The effects of tip degradation are observed in the artifacts appearing as horizontal lines across the scan, as well as the inconsistency with previous images.
+
+
+## Barlow Twins Model
++ Model:  Barlow Twins (self-supervised contrastive learning)
++ Encoder:  Resnet without pre-training, set to be trained based on augmented images from experiment samples.
++ Augmentations:  The model is fed two views of cropped AFM images from the height channel, randomly rotated by 90 degrees to create contrasts. The height channel is converted into RGB by height magnitude.
++ Loss function:  `BarlowTwinsLoss` minimizes the redundancy between the embeddings of two views.
++ Feature Vector:   After the encoder is trained (about ~350 epochs to convergence), a projection head maps each image to a D-dimensional latent space, creating the feature vectors.
+
+The feature vector for this model type is extracted during encoder training from the projection head's output. This maps the encoder's output to a D-dimensional space (around 2048-D). The projection head is used during training to minimize cross-correlation between the augmented images. After training, this projection head is removed and the encoder's output can be used for downstream classifier training.
+
+## Hybrid Model
++ Model:  Pre-trained ResNet18 with ImageNetV1 weights.
++ Input: Multichannel AFM data (8 channels, height trace is taken and converted into RGB by height magnitude).
++ Feature Vector: Final-layer activations from the CNN backbone.
++ Classifier Head:  Softmax head on top of feature vector for multi-class prediction.
+
+The feature vector for this model type is taken from the penultimate connected layer of the pre-trained ResNet18 CNN with ImageNetV1 weights. This output captures the spatial, textural, and other features from the AFM height channel trace data.
+
+The feature vector created (around 512-D for this model of ResNet18) is then fed into a classifier head (5 classes) to be used for prediction later in the pipeline.
+
+## Feature Vector Design
++ Chose the encoder type (ResNet in the case of the hybrid model, projection head from Barlow Twins).
++ Controlled the data preprocessing and augmentation strategy (random augmentation for Barlow Twins, cropping and image augmentation of height channel for hybrid model).
++ Using domain knowledge on AFM data, reward trends, and the scan index to guide the model to extract relevant features from the datasets.
++ Combined classification and reward-based losses to affect which features each model learns.
+
+These are high-dimensional embeddings from AFM images, created via self-supervised encoder architectures (either Barlow twins or this hybrid approach). The structure is guided by domain-specific augmentation of images, physics-based reward functions from real trends.
+
+Though this encoder is a NN with many internal layers, it has been designed with this training pipeline through the chosen architecture and supervision. So, the feature space of the encoder after the training pipeline reflects the AFM scanning quality and physical trends from trace data. Downstream classifiers and decision systems can work with these embeddings.
+
+
+## Target Design
++ Interprets the scan index to define the 5 classes of quality (0-4).
++ Uses the reward function defined above as a soft target, enforcing the relationship between image-based learning from the height channel and real data trends.
+
+These targets are defined based on the experimental metadata and scan indices, which map the scan examples into five categories which represent the gradual degradation of the tip. Incorporating a domain-specific reward function adds supervision to training and penalizes deviation from scan trends, allowing the model to learn beyond label or classification accuracy with physical qualities as well.
