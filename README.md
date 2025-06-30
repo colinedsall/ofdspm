@@ -1,30 +1,38 @@
 # ofdspm
 ## Outlier/Failure Detector for Scanning Probe Microscopes at the Image Level
-This is a working repository for a solution to errors presented in scanning probe microscopes between the trace and retrace. Ideally, the difference between the values measured should be zero between the trace and retrace, but in reality they are not. 
+This is a working repository to find a solution to indicating when the tip of an Atomic Force Microscope becomes damaged or dulled to the point where the images are no longer accurate.
 
-This leads to several issues with images created from the SPM, including "bad" images and lines where the tip fails to get accurate readings. Sample images are given below.
+So, the goal for this project is to **find a way to classify the status of the AFM tip, and to potentially indicate the causes for its degradation**. Through the course of this project's development, several approaches have been taken to study and design models that **perform well and sufficiently fast enough to be used in real time**.
+
+Effects of this damage occur in that the images become rounded (or less sharp), and the tip is prone to other issues such as double-tip effects and improper material data being received.
+
+This leads to several issues with images created from the microscope, including "bad" images and lines where the tip fails to get accurate readings. Sample images are given below.
 
 <p float="left">
   <img src="images/sample/bad_1.png" width="300" />
   <img src="images/sample/bad_2.png" width="300" />
 </p>
 
-For reference, good images do not have tip failures from the SPM. These images are given below:
+For reference, "good" images do not have tip failures from the SPM. These images are given below:
 <p float="left">
   <img src="images/sample/good_1.png" width="300" />
   <img src="images/sample/good_2.png" width="300" />
 </p>
 
-
 With reference to the `aespm library`, this repository explores ways to develop algorithms to detect "bad" images either as a result of statistical anomalies or from machine learning.
 + Refer to the Jupyter notebook `simulator.ipynb` for this exploration.
++ Refer to the models designed for this problem in `hybrid_model.ipynb` and `barlow_twins.ipynb` for a further exploration about classifying the wear of the tip.
 
-This repository also has a few CLI files that may be used to test and train a machine learning (ML) algorithm to classify a given `.ibw` file as "good" or "bad" based on a select sample of manually-reviewed files. At the current status of this repository, it appears that the model is highly biased towards good images (imbalance with the number of bad images), and as such is **good at detecting good images, but not good at detecting bad images**. A new (larger) dataset will likely improve the performance analytics.
+This repository also has a few CLI files that may be used to test and train a machine learning (ML) algorithm to classify a given `.ibw` file as "good" or "bad" based on a select sample of manually-reviewed files.
+
+There also exist some scripts that can be used to train both primitive and advanced models for this classification task.
 
 ## Files
 This repository contains a main Jupyter notebook, `simulator.ipnyb`, which outlines the development of several Python scripts and algorithms to classify and handle these images. The notebook also expands on previous libraries for processing `.ibw` files and even synthesizing good and bad images.
 
-Data is taken from `.ibw` files and placed into **pandas DataFrames** to be analyzed by the ML algorithm. Currently, the algorithm chosen is **RandomForestClassifier**, specifically chosen for its accuracy from experimentation and efficiency. The synthesis script uses **XGBoostClassifier** as its model because of the large synthesized training set.
+Data is taken from `.ibw` files and placed into **numpy datastructures or pandas DataFrames** to be analyzed.
+
+# Primitive Models Using Purely Data Trends
 
 ## Methodology
 The method by which a ML algorithm is trained and tested for several source files varies by the type of model created. For real images, a RandomForestClassifier model is chosen for its experimental accuracy and ease. For synthesized images, the XGBooostClassifier algorithm is used instead.
@@ -37,9 +45,16 @@ Since some of the source files contain different channels of information, this r
 + Phase
 + ZSensor
 
-Currently, most images exist as 256-by-256-point DataFrames with four channels per point. Since this repo is handling point-based classification, this implies why RandomForestClassifier is being used for tabular/structured data.
+These channels also may contain **trace and retrace** data, which **we hypothesize can be used to indicate the status of the tip** since the discrepancies between trace and retrace have been shown to be worse when the tip is damaged or broken.
 
-## Effectiveness
+The images used for advanced model training exist as 256-by-256-point DataFrames with eight channels per point. These images come from deliberate experiments to give the models sufficient wear gradients to learn the differences between good and bad tips. 
+
+## Low-Level Machine Learning Models
+### Description
+These models below represent the first development toward building at tip status classifier. **Though they are rather primitive and purely data-based, they still provide some good classification accuracy**. Refer to the description of the models below:
+
+### Training a RandomForestClassifier Model
+
 The effectiveness of the current ML model is limited by the sorted data set. Currently, there are **58 good images and 14 bad images**. This is not nearly enough and introduces bias to the training set. Using the standard 80/20% split, the ML model is excellent at finding good images, but suffers at finding bad images.
 
 A sample output from `test.py` is given below:
@@ -117,7 +132,7 @@ Since this output contains a lot of clutter, it is important to note that **this
 
 **To improve or modify the ML source files**, more files must be added to the `sorted_data/` directory in this repo.
 
-### Training a Synthetic Model (XGBoostClassifier)
+### Training a XGBoostClassifier Model
 To train a synthetic model using `train.py`, there is a CLI interface and some code that can be modified. Although the entire interface has not been written, it is still possible to generate, view, and train a model to a specific size. The CLI is as follows:
 
 ```
@@ -135,11 +150,6 @@ Actions:
 ```
 
 The reason that **this model uses XGBoostClassifier** is because it performs slightly better with large datasets (thousands of points in this case), as compared to the RandomForestsClassifier given for the real images. This can be modified within the source file, but experimentation might cause the training model to take many more minutes/hours than the current version.
-
-### Training a ML Model (RandomForestsClassifier) Using Real Images
-To train a ML model using real `.ibw` files, the `test.py` file can automatically refer to the repo's `sorted_data/` folder and train and test a model. There is not a CLI for this tester yet, but one may be added in the future. The default image is a good image, and the result above is from that image's run.
-
-Experiment with the accuracy of the ML model in predicting the impact of the four chosen channels of data on the classification of good or bad.
 
 ## Sample Outputs and Analysis
 This section will contain some sample images/outputs from the ML training and how they relate to whether or not the model has been trained well.
@@ -503,7 +513,7 @@ The ML is fairly confident with detecting good images. This is likely explained 
 The average score from these images is **0.013**. We should likely explore the ML's ability to detect more "difficult-to-see" good images.
 
 ## Benchmarking Models
-To benchmark various models using an AUC - ROC curve, the script in `benchmark.ipynb` is able to take any given model and test/train set to create benchmark statistics and identify the accuracy of the model on a test set. Though the current data sets that the repository is working with are small, it is possible that if the data fed into these algorithms is increased, we can successfully identify the best model and the metrics that cause failures.
+To **benchmark various primitive models** using an AUC - ROC curve, the script in `benchmark.ipynb` is able to take any given model and test/train set to create benchmark statistics and identify the accuracy of the model on a test set. Though the current data sets that the repository is working with are small, it is possible that if the data fed into these algorithms is increased, we can successfully identify the best model and the metrics that cause failures.
 
 Refer to the code in `utils.py` (utility module) for the functions used to determine the scores and metrics from this process.
 
@@ -531,6 +541,8 @@ Prediction: Good (confidence: 0.910)
 ```
 
 What is considered "good" versus "bad" is still arbitrarily set with various thresholds in order to make training sets. This points us at finding special metrics to identify possible failures in the tip in real time.
+
+# Advanced Models Using Image Detection and Data
 
 ## Self-Supervised Image Detection Models
 This section focuses on improving both the accuracy and real-time capabilities of this project in that we will use real experimental data to train either pre-trained CNNs or develop an encoder based on augmented images from the experiment.
@@ -796,6 +808,8 @@ All models are evaluated using an 80/20 random split (80% of data for training, 
 
 The augmentation strategy is different for each model:
 1. **Barlow Twins**:  Image augmentation is done while training the encoder and during training, but this model only uses one of 3x3 cropped images from the original. Augmentation in the same manner occurs during testing as well.
+    + It is important to note that the augmentation for the Barlow Twins encoder and classifier training is NOT the same as the hybrid model. The reason that only 9 crops are made per images is because the Barlow twins encoder benefits from smaller datasets.
+    + As a design choice, the size of the dataset used to train the Barlow twins from experimental data was limited as to not overload the encoder during training. Though the encoder reached convergence after about ~350 epochs, it could have been overtrained.
 2. **Hybrid Model**:  Image augmentation is done during training and testing, but it is different from the Barlow Twins approach. Images are augmented in the following way:
     + **3x3 crop**: From the original 256x256 image, 9 total images are created from a grid (no overlap).
     + **Rotation**: All cropped images are rotated 4 times by 90 degrees (4 new images per 9 images). This brings the total images per original to 36.
