@@ -539,24 +539,21 @@ class AdaptiveLoss(nn.Module):
         # Learnable weights for multi-task learning
         self.log_var_class = nn.Parameter(torch.zeros(1))
         self.log_var_reward = nn.Parameter(torch.zeros(1))
-        
-    def forward(self, class_pred, class_true, reward_pred, reward_true):
-        # Clamp log variances to a reasonable range
-        log_var_class = torch.clamp(self.log_var_class, min=-10, max=10)
-        log_var_reward = torch.clamp(self.log_var_reward, min=-10, max=10)
 
+    def forward(self, class_pred, class_true, reward_pred, reward_true):
         # Classification loss
         class_loss = F.cross_entropy(class_pred, class_true)
+
         # Reward loss (MSE)
         reward_loss = F.mse_loss(reward_pred.squeeze(), reward_true)
 
         # Adaptive weighting based on uncertainty
-        precision_class = torch.exp(-log_var_class)
-        precision_reward = torch.exp(-log_var_reward)
+        precision_class = torch.exp(-self.log_var_class)
+        precision_reward = torch.exp(-self.log_var_reward)
 
         # Total loss with automatic balancing
-        total_loss = (precision_class * class_loss + log_var_class +
-                    precision_reward * reward_loss + log_var_reward)
+        total_loss = (precision_class * class_loss + self.log_var_class + 
+                     precision_reward * reward_loss + self.log_var_reward)
 
         return total_loss, class_loss, reward_loss
 
@@ -1253,7 +1250,7 @@ def evaluate_hybrid_model(model, dataloader, device):
 class RealTimeHybridPlotter:
     """Enhanced real-time plotter for hybrid model training metrics"""
     
-    def __init__(self, use_jupyter=True, window_size=100, update_frequency=1):
+    def __init__(self, use_jupyter=True, window_size=100, update_frequency=1, scroll_size=1000):
         self.use_jupyter = use_jupyter
         self.window_size = window_size
         self.update_frequency = update_frequency  # Update plot every N batches
@@ -1264,10 +1261,10 @@ class RealTimeHybridPlotter:
         # self.total_losses = []
         # self.class_losses = []
         # self.reward_losses = []
-        self.batch_numbers = deque(maxlen=1000)
-        self.total_losses = deque(maxlen=1000)
-        self.class_losses = deque(maxlen=1000)
-        self.reward_losses = deque(maxlen=1000)
+        self.batch_numbers = deque(maxlen=scroll_size)
+        self.total_losses = deque(maxlen=scroll_size)
+        self.class_losses = deque(maxlen=scroll_size)
+        self.reward_losses = deque(maxlen=scroll_size)
         self.val_losses = []
         self.val_accuracies = []
         self.epoch_numbers = []
@@ -1532,7 +1529,7 @@ def validate_model_with_accuracy(model, val_dataloader, device, use_adaptive_los
 
 def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, optimizer, device, 
                                    num_epochs=10, use_adaptive_loss=True, use_jupyter=True,
-                                   plot_update_frequency=5):
+                                   plot_update_frequency=5, scroll_size=400):
     """
     Enhanced training function with improved real-time plotting
     
@@ -1543,8 +1540,9 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
     # Initialize enhanced plotter
     plotter = RealTimeHybridPlotter(
         use_jupyter=use_jupyter, 
-        window_size=400,  # Larger window for better visualization
-        update_frequency=plot_update_frequency
+        window_size=400,    # Larger window for better visualization
+        update_frequency=plot_update_frequency,
+        scroll_size=scroll_size     # Define the scroll window size here
     )
     
     # Setup loss function and optimizer
@@ -3205,6 +3203,9 @@ def bt_load_multiclass_classifier(model_path, device='cpu', num_classes=5):
     checkpoint = torch.load(model_path, map_location=device)
     has_reward_head = any(k.startswith("reward_predictor") for k in checkpoint['model_state_dict'].keys())
     
+    # Note this makes the loader non-configurable, auto-done
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') and torch.has_mps and torch.mps.is_available() else 'cpu')
+
     model = BarlowTwinsClassifier(
         num_classes=num_classes, 
         include_reward_head=has_reward_head,
@@ -4153,3 +4154,76 @@ def run_pca_analysis(hybrid_model_path: str, barlow_model_path: str,
     analyzer.save_results("pca_analysis_results.pkl")
     
     return analyzer
+
+"""
+Combination of Barlow Twins model and Hybrid Model
+"""
+
+class CombinedBT_HB_Classifier:
+    def __init__(self, bt_model_path, hb_model_path):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') and torch.has_mps and torch.mps.is_available() else 'cpu')
+
+
+        # Intialize both a BT and HB Classifier from loaded file (training takes too long)
+        self.bt_model = bt_load_multiclass_classifier(bt_model_path, device=self.device)
+        self.hb_model = load_trained_hybrid_model(hb_model_path, device=self.device)
+
+        self.model_paths = {
+            "barlow_twins": bt_model_path,
+            "hybrid": hb_model_path
+        }
+
+        # Pre-defined, same as training data
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+        self.results = {
+            "bt_result": [],
+            "hb_result": []
+        }
+
+        # No further instantiations needed
+    
+    def dual_predict(self, file_path):
+
+        self.results['bt_result'] = bt_predict_with_probabilities(self.bt_model,
+                                                              self.transform, 
+                                                              file_path, 
+                                                              device=self.device)
+    
+        bt_predicted_class = np.argmax(self.results['bt_result']['probabilities'])
+
+        if 'error' not in self.results['bt_result']['status']:
+            print(f"Barlow Twins Prediction: {bt_predicted_class} with confidence {self.results['bt_result']['probabilities']} ")
+        else:
+            print(f"   Error: {self.results['bt_result']['status']}, check configuration.")
+
+
+        # Define the Augmented Transform (same as training)
+        aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
+
+        # If possible, grab the scan index from the filename (normalized)
+        # (If this isn't available, it will just default to 0)
+        scan_index = extract_scan_index_from_filename(file_path)
+
+        self.results['hb_result'] = hb_predict_ibw(self.hb_model,
+                                                   file_path, 
+                                                   aug_transform,
+                                                   self.device,
+                                                   scan_index=scan_index)
+
+        if 'error' not in self.results['hb_result']:
+            print(f"Scan Index: {scan_index} Predicted: Class {self.results['hb_result']['predicted_class']} ({self.results['hb_result']['quality_description']}) "
+                  f"with {self.results['hb_result']['confidence']:.3f} confidence")
+        else:
+            print(f"  Error: {self.results['hb_result']['error']}")
+
+        # We now have access to both model's results, which means that we can join
+        # their combined prediction.
+
+        if np.argmax(self.results['bt_result']['probabilities']) != self.results['hb_result']['predicted_class']:
+            print(f"Models did not agree on classification.")
+        else:
+            print(f"Models agreed on classification of {file_path} as {self.results['hb_result']['predicted_class']}.")
