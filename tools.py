@@ -32,11 +32,11 @@ import pandas as pd                                                 # Pandas
 from PIL import Image                                               # Image handling
 
 # Statistics
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from sklearn.metrics import roc_curve, auc, roc_auc_score
-from sklearn.preprocessing import label_binarize
-from scipy import stats
+from sklearn.metrics import accuracy_score, classification_report   # Classification
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay# Confusion matrices
+from sklearn.metrics import roc_curve, auc, roc_auc_score           # ROC curves
+from sklearn.preprocessing import label_binarize                    # Labeling
+from scipy import stats                 
 import random
 import traceback
 import matplotlib.pyplot as plt
@@ -63,7 +63,7 @@ warnings.filterwarnings('ignore')
 from igor2 import binarywave as bw                                  # To read .ibw files
 import aespm.tools as at                                            # AE-SPM library
 
-# Errors and debug
+# Errors and debug (some tools depreciated)
 import traceback
 import re
 import json
@@ -3707,7 +3707,7 @@ class PCAAnalyzer:
         model.eval()
         
         self.models[model_name] = model
-        print(f"✓ Loaded {model_name} model from {model_path}")
+        print(f"Loaded {model_name} model from {model_path}")
         
     def load_barlow_twins_model(self, model_path: str, model_name: str = "Barlow_Twins", num_classes: int = 5):
         """
@@ -3734,7 +3734,7 @@ class PCAAnalyzer:
         model.eval()
         
         self.models[model_name] = model
-        print(f"✓ Loaded {model_name} model from {model_path}")
+        print(f"Loaded {model_name} model from {model_path}")
         print(f"  - Has reward head: {has_reward_head}")
         print(f"  - Feature dimension: 512")
         
@@ -3799,7 +3799,7 @@ class PCAAnalyzer:
         self.features[model_name] = features_array
         self.labels[model_name] = labels_array
         
-        print(f"✓ Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
+        print(f"Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
         
     def extract_features_from_files(self, model_name: str, ibw_files: List[str], 
                                   transform, max_samples: Optional[int] = None):
@@ -3877,9 +3877,9 @@ class PCAAnalyzer:
             self.features[model_name] = features_array
             self.labels[model_name] = labels_array
             
-            print(f"✓ Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
+            print(f"Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
         else:
-            print("✗ No features extracted!")
+            print("No features extracted!")
             
     def _extract_label_from_filename(self, filename: str) -> int:
         """
@@ -3933,7 +3933,7 @@ class PCAAnalyzer:
             'n_components': n_components
         }
         
-        print(f"✓ PCA completed for {model_name}")
+        print(f"PCA completed for {model_name}")
         print(f"  First 5 components explain {pca.explained_variance_ratio_[:5].sum():.3f} of variance")
         
     def plot_variance_explained(self, figsize: Tuple[int, int] = (12, 8)):
@@ -4104,7 +4104,7 @@ class PCAAnalyzer:
         with open(save_path, 'wb') as f:
             pickle.dump(results_to_save, f)
         
-        print(f"✓ Results saved to {save_path}")
+        print(f"Results saved to {save_path}")
 
 def run_pca_analysis(hybrid_model_path: str, barlow_model_path: str, 
                     test_dataloader, device='cpu', max_samples=1000):
