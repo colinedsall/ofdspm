@@ -2337,7 +2337,7 @@ class EnhancedBT_AFMDataset(Dataset):
 class BarlowTwinsClassifier(nn.Module):
     def __init__(self, num_classes=5, include_reward_head=True, dropout_rate=0.65):
         super(BarlowTwinsClassifier, self).__init__()
-        
+        import torchvision.models as models
         # Encoder (ResNet18)
         self.encoder = models.resnet18(pretrained=False)
         self.encoder.fc = nn.Identity()
