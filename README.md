@@ -606,36 +606,27 @@ After training, the models were put through similar analysis as mutliclass class
 #### Pretrained CNN (Hybrid Model)
 **Scan Index Versus Classification**
 <p align="center">
-  <img src="images/hb/hb_1.png" width="1000" />
+  <img src="images/hb/newhb_1.png" width="1000" />
 </p>
 
 <p align="center">
-  <img src="images/hb/hb_2.png" width="1000" />
+  <img src="images/hb/newhb_2.png" width="1000" />
 </p>
 
 The model appears to be the **most confident when determining if the tip is new or damaged**, though it struggles with classification in the middle classes. A further discussion of this capability can be brought up to **use the uncertainty as a feature in order to warn the user about the tip condition**.
 
 **AUC - ROC Curves**
 <p align="center">
-  <img src="images/hb/hb_3.png" width="1000" />
+  <img src="images/hb/newhb_3.png" width="1000" />
 </p>
 
-```
-Per-Class AUC Scores:
-  Class 0: 0.9436
-  Class 1: 0.8083
-  Class 2: 0.6579
-  Class 3: 0.8459
-  Class 4: 0.8631
-```
 
 The AUC - ROC curve above shows that the model is **rather successful in its classification** for all classes, but it **struggles with the middle classes**, as shown above.
 
-The new-tip classification score is 0.94, and the last two classes have classification scores around 0.86.
 
 **Confusion Matrix**
 <p align="center">
-  <img src="images/hb/hb_4.png" width="1000" />
+  <img src="images/hb/newhb_4.png" width="1000" />
 </p>
 
 The confusion matrix has a clear linear trend, with many classifications at the start and finish being accurate. However, it appears as the tip becomes more damaged (i.e. classes 3-4), the model struggles to classify the tip as accurately.
@@ -644,11 +635,11 @@ The confusion matrix has a clear linear trend, with many classifications at the 
 #### Barlow Twins Approach
 **Scan Index Versus Classification**
 <p align="center">
-  <img src="images/bt/bt_1.png" width="1000" />
+  <img src="images/bt/newbt_1.png" width="1000" />
 </p>
 
 <p align="center">
-  <img src="images/bt/bt_2.png" width="1000" />
+  <img src="images/bt/newbt_2.png" width="1000" />
 </p>
 
 This model appears to have a successful, linear relaitonship between the scan index and its classification after training. This may indicate that the Barlow Twins approach benefited more from the smaller training set and more epochs, but we still observe the same trend if not worse about confidence values for each classification.
@@ -657,11 +648,11 @@ This model appears to **struggle to classify the middle classes, while being rat
 
 **AUC - ROC Curves**
 <p align="center">
-  <img src="images/bt/bt_3.png" width="1000" />
+  <img src="images/bt/newbt_3.png" width="1000" />
 </p>
 
 <p align="center">
-  <img src="images/bt/bt_4.png" width="1000" />
+  <img src="images/bt/newbt_5.png" width="1000" />
 </p>
 
 The curve here shows some interesting trend, and it relates to the incertainty shown in the above image. **The classifier is fairly good at making the correct choice for class 0 and class 4, but may perform worse than random for the middle classes.**
@@ -670,7 +661,7 @@ This brings us to consider the importance of the middle classes. If the model is
 
 **Confusion Matrix**
 <p align="center">
-  <img src="images/bt/bt_5.png" width="1000" />
+  <img src="images/bt/bt_4.png" width="1000" />
 </p>
 
 The confusion matrix shows a similar trend to the hybrid approach above. The model is fairly certain about classifications at the extremes, but appears to overclassify and underclassify images in the middle (hence why it is more uncertain).
