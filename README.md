@@ -631,6 +631,15 @@ Scan information, with setpoint changing solely for wear-out images.
 
 **Wear-out scan at final index 34**. The effects of tip degradation are observed in the artifacts appearing as horizontal lines across the scan, as well as the inconsistency with previous images.
 
+ Categories for Classification
+| Class Index | Description               |
+|-------------|---------------------------|
+| 0           | Pristine / new            |
+| 1           | Slight degradation        |
+| 2           | Moderate degradation      |
+| 3           | Severe degradation        |
+| 4           | Tip broken                |
+
 
 ## Barlow Twins Model
 + **Model**:  Barlow Twins (self-supervised contrastive learning)
@@ -657,6 +666,16 @@ The feature vector created (around 512-D for this model of ResNet18) is then fed
 + Using **domain knowledge on AFM data, reward trends, and the scan index** to guide the model to extract relevant features from the datasets.
 + **Combined classification and reward-based losses** to affect which features each model learns.
 
+The following table summarizes the learned feature representations used by the two models:
+
+| Model           | Input Type            | Feature Vector Dimension | Feature Source                |
+|----------------|------------------------|---------------------------|-------------------------------|
+| Barlow Twins   | 256×256 AFM crops      | 2048                      | Self-supervised ResNet18 encoder |
+| Hybrid ResNet  | 256×256 AFM crops      | 512                       | Penultimate layer of pretrained ResNet18 |
+
+Both models operate on 3×3 non-overlapping crops (9 per image), resized to 256×256 pixels. These crops are used to form individual examples for classification.
+
+
 These are **high-dimensional embeddings from AFM images, created via self-supervised encoder architectures (either Barlow twins or this hybrid approach)**. The structure is guided by domain-specific augmentation of images, physics-based reward functions from real trends.
 
 Though this encoder is a NN with many internal layers, it has been designed with this training pipeline through the chosen architecture and supervision. So, the **feature space of the encoder after the training pipeline reflects the AFM scanning quality and physical trends from trace data**. Downstream classifiers and decision systems can work with these embeddings.
@@ -667,6 +686,18 @@ Though this encoder is a NN with many internal layers, it has been designed with
 + Uses the reward function defined above as a soft target, enforcing the relationship between image-based learning from the height channel and real data trends.
 
 These targets are defined based on the experimental metadata and scan indices, which map the scan examples into five categories which represent the gradual degradation of the tip. Incorporating a domain-specific reward function adds supervision to training and penalizes deviation from scan trends, allowing the model to learn beyond label or classification accuracy with physical qualities as well.
+
+
+| Component        | Features                                | Target Labels                         |
+|------------------|------------------------------------------|----------------------------------------|
+| Barlow Twins     | 2048-D self-supervised embedding         | 5-class or binary degradation label    |
+| Hybrid ResNet    | 512-D pretrained ResNet18 features       | 5-class or binary degradation label    |
+| Combined Model (hypothesized)   | 2560-D concatenated vector               | Final class prediction                 |
+
+Targets:
+- 5-class ordinal scale (0 to 4)
+- Binary collapse (good vs. bad)
+- Optional detection of high-uncertainty crops for failure prediction
 
 ## Test Dataset Formation and Evaluation Strategy
 All models are evaluated using an 80/20 random split (80% of data for training, 20% for testing) over each epoch of training.
@@ -681,9 +712,21 @@ The augmentation strategy is different for each model:
     + **Horizontal Flipping**: Each image is then flipped horizontally, effectively doubling the total images to 72 images per original.
     + For a trial of 71 images, this augmentation will result in **5112 images to train on**.
 
+  
+### Barlow Twins Model
+
+
+### Hybrid Model
+- Input: Same 256×256 crops.
+- Feature extraction: Use pretrained ResNet18 to extract 512-dimensional vectors.
+- Supervised training: Train classifiers on extracted features using degradation labels.
+- Classifiers used: Logistic regression, shallow MLP, decision trees.
+
+
 
 ### Methodology
 Two models will be trained and analyzed based on specific design criteria. The models will be fed images (raw, RGB image data, cropped and/or augmneted), to train on feature detection. A reward-based, minimization of loss training program will be run on these problems to use a physics-based reward function derived and weighted exeprimentally.
+
 
 #### **Reward Function**
 + **Height Consistency** (Trace vs Retrace) - MAE between two values
@@ -727,9 +770,19 @@ The intent for this is that a smaller, sample image (86x86), can be **fed into t
 Both models were fed cropped images (3x3 crops from the original 256x256-point image), which will be important later for the discussion of usecases.
 
 #### Training Data
-Both models were trained locally using hardware acceleration (CUDA), of which the number of epochs and reinforcement are:
-1. **Pretrained CNN**: 4 epochs (ran into performance issues), with 5112 samples from augmented data from 71 files (72 times augmentation ratio). Training/validation batches were 256/64.
+Both models were trained locally using hardware acceleration (CUDA/MPS), of which the number of epochs and reinforcement are:
+1. **Pretrained CNN/Hybrid Model**: 4 epochs (ran into performance issues), with 5112 samples from augmented data from 71 files (72 times augmentation ratio). Training/validation batches were 256/64.
+    - Input: Cropped and augmented AFM images (rotations, flips).
+    - Feature extraction: Use pretrained ResNet18 to extract 512-dimensional vectors.
+    - Supervised training: Train classifiers on extracted features using degradation labels.
+    - Classifiers used: Logistic regression, shallow MLP, decision trees.
+
 2. **Barlow Twins**: ~350 epochs to convergence for decoder. Classifier was trained to about ~400 epochs until reaching near-convergence at 60% accuracy.
+    - Input: Same 256×256 crops.
+    - Dataset: 71 original AFM images → 639 total base crops (3×3).
+    - Augmentation: ~72× augmentation, resulting in ~5100 total training examples.
+    - Learning objective: Maximize similarity between different augmentations of the same crop.
+    - Labels: Not used during Barlow Twins training; applied afterward for classification using the learned embeddings.
 
 Both models were trained with the same experimental dataset of 71 images (36 read-out images, 35 wear-out images.)
 
