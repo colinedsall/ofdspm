@@ -49,6 +49,15 @@ from collections import deque
 from IPython.display import display, clear_output
 # from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+# PCA analysis
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from pathlib import Path
+import pickle
+from typing import Dict, List, Tuple, Optional
+import warnings
+warnings.filterwarnings('ignore')
+
 
 # API with SPM
 from igor2 import binarywave as bw                                  # To read .ibw files
@@ -3661,3 +3670,479 @@ def bt_plot_confidence_vs_predicted_class(results, title="Confidence vs Predicte
     plt.legend()
     plt.grid(True)
     plt.show()
+
+
+"""
+PCA Analysis for comparsion of the two mode.
+"""
+
+class PCAAnalyzer:
+    """
+    A comprehensive PCA analysis tool for comparing AFM tip classification models.
+    Designed to work with RewardAwareModel and Barlow Twins models.
+    """
+    
+    def __init__(self, device='cpu'):
+        self.device = device
+        self.models = {}
+        self.features = {}
+        self.labels = {}
+        self.pca_results = {}
+        self.quality_descriptions = {
+            0: "Excellent (Class 0)",
+            1: "Good (Class 1)", 
+            2: "Fair (Class 2)",
+            3: "Poor (Class 3)",
+            4: "Bad (Class 4)"
+        }
+        
+    def load_hybrid_model(self, model_path: str, model_name: str = "Hybrid"):
+        """Load the Hybrid RewardAwareModel"""
+        from tools import RewardAwareModel
+        
+        model = RewardAwareModel(num_classes=5, pretrained=False)
+        checkpoint = torch.load(model_path, map_location=self.device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(self.device)
+        model.eval()
+        
+        self.models[model_name] = model
+        print(f"✓ Loaded {model_name} model from {model_path}")
+        
+    def load_barlow_twins_model(self, model_path: str, model_name: str = "Barlow_Twins", num_classes: int = 5):
+        """
+        Load the Barlow Twins model using the provided BarlowTwinsClassifier.
+        
+        Args:
+            model_path: Path to the saved model
+            model_name: Name to use for this model
+            num_classes: Number of classes for the classifier
+        """
+        # Load checkpoint to check for reward head
+        checkpoint = torch.load(model_path, map_location=self.device)
+        has_reward_head = any(k.startswith("reward_predictor") for k in checkpoint['model_state_dict'].keys())
+        
+        # Create model with appropriate configuration
+        model = BarlowTwinsClassifier(
+            num_classes=num_classes, 
+            include_reward_head=has_reward_head,
+            dropout_rate=0.3  # Using lower dropout for inference
+        )
+        
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        model.to(self.device)
+        model.eval()
+        
+        self.models[model_name] = model
+        print(f"✓ Loaded {model_name} model from {model_path}")
+        print(f"  - Has reward head: {has_reward_head}")
+        print(f"  - Feature dimension: 512")
+        
+    def extract_features_from_dataloader(self, model_name: str, dataloader, 
+                                       max_samples: Optional[int] = None):
+        """
+        Extract final layer features from a dataloader
+        
+        Args:
+            model_name: Name of the model to use
+            dataloader: PyTorch DataLoader with your test data
+            max_samples: Maximum number of samples to process (None for all)
+        """
+        model = self.models[model_name]
+        model.eval()
+        
+        all_features = []
+        all_labels = []
+        sample_count = 0
+        
+        print(f"Extracting features using {model_name} model...")
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(dataloader):
+                # Handle your custom collate function output
+                if isinstance(batch, dict):
+                    images = batch['image'].to(self.device)
+                    labels = batch['label']
+                else:
+                    images, labels = batch[0].to(self.device), batch[1]
+                
+                # Extract features
+                if hasattr(model, 'return_features') or 'return_features' in model.forward.__code__.co_varnames:
+                    # For both RewardAwareModel and BarlowTwinsClassifier
+                    if hasattr(model, 'include_reward_head') and model.include_reward_head:
+                        # Barlow Twins with reward head
+                        _, _, features = model(images, return_features=True)
+                    else:
+                        # Barlow Twins without reward head or Hybrid model
+                        try:
+                            _, _, features = model(images, return_features=True)
+                        except ValueError:
+                            # Handle case where model returns only class output
+                            class_output, features = model(images, return_features=True)
+                else:
+                    # Fallback for other models
+                    features = model.get_features(images)
+                
+                all_features.append(features.cpu().numpy())
+                all_labels.extend(labels.numpy() if isinstance(labels, torch.Tensor) else labels)
+                
+                sample_count += len(labels)
+                if max_samples and sample_count >= max_samples:
+                    break
+                    
+                if batch_idx % 10 == 0:
+                    print(f"  Processed {sample_count} samples...")
+        
+        features_array = np.vstack(all_features)
+        labels_array = np.array(all_labels)
+        
+        self.features[model_name] = features_array
+        self.labels[model_name] = labels_array
+        
+        print(f"✓ Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
+        
+    def extract_features_from_files(self, model_name: str, ibw_files: List[str], 
+                                  transform, max_samples: Optional[int] = None):
+        """
+        Extract features from individual IBW files
+        
+        Args:
+            model_name: Name of the model to use
+            ibw_files: List of IBW file paths
+            transform: Transform to apply to images
+            max_samples: Maximum number of files to process
+        """
+        from tools import load_ibw  # Assuming this import works
+        from PIL import Image
+        
+        model = self.models[model_name]
+        model.eval()
+        
+        all_features = []
+        all_labels = []
+        
+        files_to_process = ibw_files[:max_samples] if max_samples else ibw_files
+        print(f"Extracting features from {len(files_to_process)} IBW files using {model_name}...")
+        
+        with torch.no_grad():
+            for i, file_path in enumerate(files_to_process):
+                try:
+                    # Load IBW file
+                    ibw_data = load_ibw(file_path)
+                    height_img = ibw_data.z
+                    
+                    # Convert to PIL image
+                    h_min, h_max = np.min(height_img), np.max(height_img)
+                    norm_img = 255 * (height_img - h_min) / (h_max - h_min + 1e-8)
+                    norm_img = norm_img.astype(np.uint8)
+                    pil_img = Image.fromarray(norm_img).convert("RGB")
+                    
+                    # Apply transform
+                    img_tensor = transform(pil_img).unsqueeze(0).to(self.device)
+                    
+                    # Extract features
+                    if hasattr(model, 'return_features') or 'return_features' in model.forward.__code__.co_varnames:
+                        # For both RewardAwareModel and BarlowTwinsClassifier
+                        if hasattr(model, 'include_reward_head') and model.include_reward_head:
+                            # Barlow Twins with reward head
+                            _, _, features = model(img_tensor, return_features=True)
+                        else:
+                            # Barlow Twins without reward head or Hybrid model
+                            try:
+                                _, _, features = model(img_tensor, return_features=True)
+                            except ValueError:
+                                # Handle case where model returns only class output
+                                class_output, features = model(img_tensor, return_features=True)
+                    else:
+                        # Fallback
+                        features = model.get_features(img_tensor)
+                    
+                    all_features.append(features.cpu().numpy())
+                    
+                    # Extract label from filename (you might need to adjust this)
+                    label = self._extract_label_from_filename(file_path)
+                    all_labels.append(label)
+                    
+                    if i % 50 == 0:
+                        print(f"  Processed {i+1}/{len(files_to_process)} files...")
+                        
+                except Exception as e:
+                    print(f"  Error processing {file_path}: {e}")
+                    continue
+        
+        if all_features:
+            features_array = np.vstack(all_features)
+            labels_array = np.array(all_labels)
+            
+            self.features[model_name] = features_array
+            self.labels[model_name] = labels_array
+            
+            print(f"✓ Extracted {len(features_array)} feature vectors of dimension {features_array.shape[1]}")
+        else:
+            print("✗ No features extracted!")
+            
+    def _extract_label_from_filename(self, filename: str) -> int:
+        """
+        Extract class label from filename. Adjust this based on your naming convention.
+        This is a placeholder - you'll need to implement based on your file naming.
+        """
+        # Example: if files are named like "class_0_sample_001.ibw"
+        # You'll need to adjust this based on your actual file naming convention
+        import re
+        match = re.search(r'class_(\d+)', filename.lower())
+        if match:
+            return int(match.group(1))
+        else:
+            # Default to class 0 if can't extract
+            print(f"Warning: Could not extract label from {filename}, defaulting to class 0")
+            return 0
+    
+    def perform_pca(self, model_name: str, n_components: int = 10, standardize: bool = True):
+        """
+        Perform PCA analysis on extracted features
+        
+        Args:
+            model_name: Name of the model
+            n_components: Number of principal components
+            standardize: Whether to standardize features before PCA
+        """
+        if model_name not in self.features:
+            raise ValueError(f"No features found for model {model_name}. Extract features first.")
+        
+        features = self.features[model_name]
+        
+        # Standardize features if requested
+        if standardize:
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(features)
+        else:
+            features_scaled = features
+        
+        # Perform PCA
+        pca = PCA(n_components=n_components)
+        features_pca = pca.fit_transform(features_scaled)
+        
+        # Store results
+        self.pca_results[model_name] = {
+            'pca_object': pca,
+            'features_pca': features_pca,
+            'features_scaled': features_scaled,
+            'explained_variance_ratio': pca.explained_variance_ratio_,
+            'cumulative_variance': np.cumsum(pca.explained_variance_ratio_),
+            'components': pca.components_,
+            'n_components': n_components
+        }
+        
+        print(f"✓ PCA completed for {model_name}")
+        print(f"  First 5 components explain {pca.explained_variance_ratio_[:5].sum():.3f} of variance")
+        
+    def plot_variance_explained(self, figsize: Tuple[int, int] = (12, 8)):
+        """Plot explained variance for all models"""
+        if not self.pca_results:
+            print("No PCA results found. Run perform_pca() first.")
+            return
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # Individual variance explained
+        for model_name, results in self.pca_results.items():
+            n_comp = min(10, len(results['explained_variance_ratio']))
+            ax1.bar(range(1, n_comp + 1), results['explained_variance_ratio'][:n_comp], 
+                   alpha=0.7, label=model_name)
+        
+        ax1.set_xlabel('Principal Component')
+        ax1.set_ylabel('Variance Explained')
+        ax1.set_title('Variance Explained by Each Component')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Cumulative variance explained
+        for model_name, results in self.pca_results.items():
+            n_comp = min(10, len(results['cumulative_variance']))
+            ax2.plot(range(1, n_comp + 1), results['cumulative_variance'][:n_comp], 
+                    'o-', label=model_name, linewidth=2)
+        
+        ax2.set_xlabel('Number of Components')
+        ax2.set_ylabel('Cumulative Variance Explained')
+        ax2.set_title('Cumulative Variance Explained')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0.95, color='red', linestyle='--', alpha=0.7, label='95%')
+        
+        plt.tight_layout()
+        plt.show()
+        
+    def plot_pca_scatter(self, pc1: int = 0, pc2: int = 1, figsize: Tuple[int, int] = (15, 6)):
+        """
+        Create scatter plots of PCA results for all models
+        
+        Args:
+            pc1, pc2: Which principal components to plot (0-indexed)
+            figsize: Figure size
+        """
+        if not self.pca_results:
+            print("No PCA results found. Run perform_pca() first.")
+            return
+        
+        n_models = len(self.pca_results)
+        fig, axes = plt.subplots(1, n_models, figsize=figsize)
+        if n_models == 1:
+            axes = [axes]
+        
+        colors = plt.cm.Set1(np.linspace(0, 1, 5))  # 5 classes
+        
+        for idx, (model_name, results) in enumerate(self.pca_results.items()):
+            ax = axes[idx]
+            features_pca = results['features_pca']
+            labels = self.labels[model_name]
+            
+            # Plot each class
+            for class_idx in range(5):
+                mask = labels == class_idx
+                if np.any(mask):
+                    ax.scatter(features_pca[mask, pc1], features_pca[mask, pc2], 
+                             c=[colors[class_idx]], alpha=0.6, s=30,
+                             label=self.quality_descriptions[class_idx])
+            
+            ax.set_xlabel(f'PC{pc1+1} ({results["explained_variance_ratio"][pc1]:.2%} variance)')
+            ax.set_ylabel(f'PC{pc2+1} ({results["explained_variance_ratio"][pc2]:.2%} variance)')
+            ax.set_title(f'{model_name} - PCA Feature Space')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+    def plot_class_separation(self, figsize: Tuple[int, int] = (15, 10)):
+        """
+        Analyze class separation in PCA space
+        """
+        if not self.pca_results:
+            print("No PCA results found. Run perform_pca() first.")
+            return
+        
+        n_models = len(self.pca_results)
+        fig, axes = plt.subplots(2, n_models, figsize=figsize)
+        if n_models == 1:
+            axes = axes.reshape(-1, 1)
+        
+        for idx, (model_name, results) in enumerate(self.pca_results.items()):
+            features_pca = results['features_pca']
+            labels = self.labels[model_name]
+            
+            # Plot 1: Distribution of first PC by class
+            ax1 = axes[0, idx]
+            for class_idx in range(5):
+                mask = labels == class_idx
+                if np.any(mask):
+                    ax1.hist(features_pca[mask, 0], alpha=0.6, bins=20, 
+                            label=f'Class {class_idx}', density=True)
+            
+            ax1.set_xlabel('First Principal Component')
+            ax1.set_ylabel('Density')
+            ax1.set_title(f'{model_name} - PC1 Distribution by Class')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Distance from origin by class
+            ax2 = axes[1, idx]
+            distances = np.sqrt(np.sum(features_pca[:, :2]**2, axis=1))
+            
+            class_distances = []
+            class_labels = []
+            for class_idx in range(5):
+                mask = labels == class_idx
+                if np.any(mask):
+                    class_distances.extend(distances[mask])
+                    class_labels.extend([f'Class {class_idx}'] * np.sum(mask))
+            
+            # Box plot of distances
+            import pandas as pd
+            df = pd.DataFrame({'Distance': class_distances, 'Class': class_labels})
+            sns.boxplot(data=df, x='Class', y='Distance', ax=ax2)
+            ax2.set_title(f'{model_name} - Distance from Origin (PC1-PC2)')
+            ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+    def compare_models(self):
+        """
+        Generate a comprehensive comparison between models
+        """
+        if len(self.pca_results) < 2:
+            print("Need at least 2 models for comparison")
+            return
+        
+        print("=" * 60)
+        print("MODEL COMPARISON SUMMARY")
+        print("=" * 60)
+        
+        for model_name, results in self.pca_results.items():
+            print(f"\n{model_name} Model:")
+            print(f"  Feature dimension: {self.features[model_name].shape[1]}")
+            print(f"  Number of samples: {len(self.features[model_name])}")
+            print(f"  PC1 explains: {results['explained_variance_ratio'][0]:.2%} of variance")
+            print(f"  PC1+PC2 explains: {results['explained_variance_ratio'][:2].sum():.2%} of variance")
+            print(f"  First 5 PCs explain: {results['explained_variance_ratio'][:5].sum():.2%} of variance")
+            
+            # Class distribution
+            unique, counts = np.unique(self.labels[model_name], return_counts=True)
+            print(f"  Class distribution: {dict(zip(unique, counts))}")
+        
+        print("\n" + "=" * 60)
+        
+    def save_results(self, save_path: str):
+        """Save PCA results to file"""
+        results_to_save = {
+            'features': self.features,
+            'labels': self.labels,
+            'pca_results': {name: {k: v for k, v in results.items() if k != 'pca_object'} 
+                           for name, results in self.pca_results.items()}
+        }
+        
+        with open(save_path, 'wb') as f:
+            pickle.dump(results_to_save, f)
+        
+        print(f"✓ Results saved to {save_path}")
+
+def run_pca_analysis(hybrid_model_path: str, barlow_model_path: str, 
+                    test_dataloader, device='cpu', max_samples=1000):
+    """
+    Complete PCA analysis workflow
+    
+    Args:
+        hybrid_model_path: Path to saved hybrid model
+        barlow_model_path: Path to saved Barlow Twins model
+        test_dataloader: DataLoader with test data
+        device: PyTorch device
+    """
+
+    # Initialize analyzer
+    analyzer = PCAAnalyzer(device=device)
+    
+    # Load models
+    analyzer.load_hybrid_model(hybrid_model_path, "Hybrid")
+    analyzer.load_barlow_twins_model(barlow_model_path, "Barlow_Twins")
+    
+    # Extract features from both models
+    analyzer.extract_features_from_dataloader("Hybrid", test_dataloader, max_samples=max_samples)
+    analyzer.extract_features_from_dataloader("Barlow_Twins", test_dataloader, max_samples=max_samples)
+    
+    # Perform PCA
+    analyzer.perform_pca("Hybrid", n_components=10)
+    analyzer.perform_pca("Barlow_Twins", n_components=10)
+    
+    # Generate visualizations
+    analyzer.plot_variance_explained()
+    analyzer.plot_pca_scatter(pc1=0, pc2=1)
+    analyzer.plot_pca_scatter(pc1=1, pc2=2)
+    analyzer.plot_class_separation()
+    
+    # Print comparison
+    analyzer.compare_models()
+    
+    # Save results
+    analyzer.save_results("pca_analysis_results.pkl")
+    
+    return analyzer
