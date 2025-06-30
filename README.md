@@ -852,11 +852,61 @@ This brings us to consider the importance of the middle classes. If the model is
 
 The confusion matrix shows a similar trend to the hybrid approach above. The model is fairly certain about classifications at the extremes, but appears to overclassify and underclassify images in the middle (hence why it is more uncertain).
 
+## PCA Analysis and Model Comparison
+To show that the designed hybrid model architecture is superior to the Barlow Twins model for this classification problem, we can conduct some PCA analysis of the features the models learn.
+
+This functionality has been added to the `examples.ipynb` notebook for use for both the hybrid model and the Barlow Twins model.
+
+The following images and analysis demonstrate that the hybrid model is both well-designed and the best fit for this problem.
+
+```
+Hybrid Model:
+  Feature dimension: 512
+  Number of samples: 1023
+  PC1 explains: 18.08% of variance
+  PC1+PC2 explains: 33.05% of variance
+  First 5 PCs explain: 66.30% of variance
+  Class distribution: {0: 209, 1: 216, 2: 200, 3: 201, 4: 197}
+
+Barlow_Twins Model:
+  Feature dimension: 512
+  Number of samples: 1023
+  PC1 explains: 52.32% of variance
+  PC1+PC2 explains: 58.04% of variance
+  First 5 PCs explain: 68.03% of variance
+  Class distribution: {0: 209, 1: 216, 2: 200, 3: 201, 4: 197}
+```
+
+<p align="center">
+  <img src="images/pca/pca_1.png" width="1000" />
+</p>
+
+The representation collapse of the Barlow Twins model is apparent form the variance charts. The model appears to have oversimplified the feature space, resulting with **PC1 capturing more than half of the variance**. The hybrid model's PC1 only captures around 18% of the variance for this example, which is much more acceptable.
+
+<p align="center">
+  <img src="images/pca/pca_2.png" width="1000" />
+</p>
+
+The **defined clusters for the hybrid model** show that the model is learning to distinguish classes very well, while the Barlow Twins model does not have this separation between PC1 and PC2. **The lack of separation therein likely points to the lack of certainty and accuracy in the Barlow Twins model.**
+
+<p align="center">
+  <img src="images/pca/pca_3.png" width="1000" />
+</p>
+
+The comparison of **PC2 and PC3 feature spaces** also shows that the hybrid model is successful at learning differences between features, while the Barlow Twins model struggles to solve the multiclass problem. This points us to believe that the **Barlow Twins method employed in this project is instilling a multiclass classifier on top of a binary classifier** (a pitfall of the contrastive learning).
+
+<p align="center">
+  <img src="images/pca/pca_4.png" width="1000" />
+</p>
+
+This final distribution for PC1 by class shows that the hybrid model succeeded in separating the classes (Class 4 still struggles slightly), while the Barlow Twins model has a very similar distribution for class identification. **The individual peaks per classes is a remarkable result for the hybrid model architecture**, and it may insist that this model can be successful on a larger scale.
+
 ### Usecase
 These models were trained using 3x3 cropped and augmented images. The goal for this approach was to:
 1. Allow the model to be trained on more samples, by splitting up the training data and augmenting images for the models to work with.
 2. Allow the user to sample the AFM tip in real-time **without having to complete a full scan**. Hence, the user can feed up to 9 samples into the model at a time and get predictions about the status of the tip during runtime. **This can be used to stop the AFM in cases where the tip may be close to breaking (classes 2-3).**
 
 Further improvements to the interface between these models and realtime data must be made, but for now the model has the capability for smaller samples of data to be used to predict the classification of the tip.
+
 
 

@@ -541,20 +541,23 @@ class AdaptiveLoss(nn.Module):
         self.log_var_reward = nn.Parameter(torch.zeros(1))
         
     def forward(self, class_pred, class_true, reward_pred, reward_true):
+        # Clamp log variances to a reasonable range
+        log_var_class = torch.clamp(self.log_var_class, min=-10, max=10)
+        log_var_reward = torch.clamp(self.log_var_reward, min=-10, max=10)
+
         # Classification loss
         class_loss = F.cross_entropy(class_pred, class_true)
-        
         # Reward loss (MSE)
         reward_loss = F.mse_loss(reward_pred.squeeze(), reward_true)
-        
+
         # Adaptive weighting based on uncertainty
-        precision_class = torch.exp(-self.log_var_class)
-        precision_reward = torch.exp(-self.log_var_reward)
-        
+        precision_class = torch.exp(-log_var_class)
+        precision_reward = torch.exp(-log_var_reward)
+
         # Total loss with automatic balancing
-        total_loss = (precision_class * class_loss + self.log_var_class + 
-                     precision_reward * reward_loss + self.log_var_reward)
-        
+        total_loss = (precision_class * class_loss + log_var_class +
+                    precision_reward * reward_loss + log_var_reward)
+
         return total_loss, class_loss, reward_loss
 
 def load_multi_dataset(base_folders, dataset_names):
@@ -1257,10 +1260,14 @@ class RealTimeHybridPlotter:
         self.update_counter = 0
         
         # Storage for metrics
-        self.batch_numbers = []
-        self.total_losses = []
-        self.class_losses = []
-        self.reward_losses = []
+        # self.batch_numbers = []
+        # self.total_losses = []
+        # self.class_losses = []
+        # self.reward_losses = []
+        self.batch_numbers = deque(maxlen=1000)
+        self.total_losses = deque(maxlen=1000)
+        self.class_losses = deque(maxlen=1000)
+        self.reward_losses = deque(maxlen=1000)
         self.val_losses = []
         self.val_accuracies = []
         self.epoch_numbers = []
