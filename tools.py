@@ -1716,7 +1716,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
     print(f"\nTraining completed.")
     print(f"Best validation loss: {best_val_loss:.6f}")
     print(f"Best validation accuracy: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
-    print(f"Final plot saved as 'final_training_progress.png'")
+    # print(f"Final plot saved as 'final_training_progress.png'")
     
     return train_losses, val_losses, val_accuracies, plotter
 
@@ -4138,10 +4138,13 @@ def run_pca_analysis(hybrid_model_path: str, barlow_model_path: str,
     analyzer.perform_pca("Hybrid", n_components=10)
     analyzer.perform_pca("Barlow_Twins", n_components=10)
     
-    # Generate visualizations
+    # Generate visualizations, let's do four here, but we really only want to focus
+    # on the first two
     analyzer.plot_variance_explained()
     analyzer.plot_pca_scatter(pc1=0, pc2=1)
     analyzer.plot_pca_scatter(pc1=1, pc2=2)
+    analyzer.plot_pca_scatter(pc1=2, pc2=3)
+    analyzer.plot_pca_scatter(pc1=3, pc2=4)
     analyzer.plot_class_separation()
     
     # Print comparison
@@ -4197,11 +4200,11 @@ class CombinedBT_HB_Classifier:
         
             # Get scan index if available from training
             scan_index = extract_scan_index_from_filename(file_path)
-            self.data["scan_indices"].append(scan_index)
+            self.data['scan_indices'].append(scan_index)
 
         # Map scan_indices to class labels
-        if self.data["scan_indices"]:
-            self.data["class_label"] = generate_labels_from_scan_indices(self.data["scan_indices"])
+        if self.data['scan_indices']:
+            self.data['class_label'] = generate_labels_from_scan_indices(self.data['scan_indices'])
     
         file_paths = []
         file_paths = get_all_ibw_files(parent_folder)
@@ -4210,7 +4213,7 @@ class CombinedBT_HB_Classifier:
             print(f"Processing file {i+1}/{len(file_paths)}: {file_path}")
         
             # Get scan index if available from training
-            self.data["scan_indices"].append(extract_scan_index_from_filename(file_path))
+            self.data['scan_indices'].append(extract_scan_index_from_filename(file_path))
 
         # No further instantiations needed
     
@@ -4269,9 +4272,9 @@ class CombinedBT_HB_Classifier:
             # Find the scan index for this file
             scan_index = extract_scan_index_from_filename(file_path)
             # Find the true class label for this scan index (if available)
-            if scan_index in self.data["scan_indices"]:
-                idx = self.data["scan_indices"].index(scan_index)
-                true_class = self.data["class_label"][idx]
+            if scan_index in self.data['scan_indices']:
+                idx = self.data['scan_indices'].index(scan_index)
+                true_class = self.data['class_label'][idx]
             else:
                 true_class = None
 
@@ -4288,15 +4291,15 @@ class CombinedBT_HB_Classifier:
         BOLD_END = '\033[0m'
 
         print(f"Disagreed classes (list): {self.data['disagreed_classes']}")
-        self.data["average_class_difference"] = np.average(self.data['disagreed_classes'])
+        self.data['average_class_difference'] = np.average(self.data['disagreed_classes'])
         
         def most_frequent(List):
             return max(set(List), key=List.count)
         
-        self.data["most_common_class_disagreement"] = most_frequent(self.data["disagreed_classes"])
+        self.data['most_common_class_disagreement'] = most_frequent(self.data['disagreed_classes'])
         
         print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
-        print(f"Most common class disagreed on: {BOLD_START}Class {self.data["most_common_class_disagreement"]}{BOLD_END}")
+        print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
 
 # if __name__ == "__main__":
@@ -4316,7 +4319,7 @@ class CombinedBT_HB_Classifier:
 #     print(f"Found {len(file_paths)} .ibw files in {parent_folder} and its subfolders.")
 
 #     bt_model_path = 'barlow_twins_multiclass_classifier_v1.pth'
-#     hb_model_path = 'hybrid_model_v1.pth'
+#     hb_model_path = 'hybrid_model.pth'
 #     cmodel = CombinedBT_HB_Classifier(bt_model_path, hb_model_path, parent_folder)
 
 #     for file_path in file_paths:
