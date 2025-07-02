@@ -2,7 +2,7 @@
 Filename:           tools.py
 Author:             Colin Edsall
 Date:               June 26, 2025
-Version:            1
+Version:            2
 Changelog:          (Version 1) Initial commit.
 Description:        This python file contains scripts needed for training  either the Barlow Twins approach 
                     for a model to predict the condition of an AFM tip based on trace and image data, or the
@@ -13,6 +13,11 @@ Description:        This python file contains scripts needed for training  eithe
                     epochs required for training.
 
                     Seek documentation in this repository (README.md) for the use cases of this code.
+
+                    (Version 2) Comparison changes
+                    Changed to allow plotting and comparison of a hybrid model to the Barlow
+                    Twins model. We also begin looking at using both models in conjunction to receive
+                    a certain prediction.
 """
 
 # Torch, for accessing models
@@ -529,6 +534,14 @@ def is_jupyter():
         pass
     return False
 
+def clear_console():
+# For Windows
+    if os.name == 'nt':
+        _ = os.system('cls')
+    # For macOS and Linux
+    else:
+        _ = os.system('clear')
+
 """
 Hybrid model training functions and class definitions for adaptive loss training and a reward-aware model.
 """
@@ -1003,22 +1016,6 @@ def compute_reward(ibw_data,
     total_reward = sum(weights[key] * rewards[key] for key in weights.keys())
     
     return total_reward
-
-def generate_labels_from_scan_indices(scan_indices):
-    """
-    Split scan indices into 5 groups as evenly as possible and assign labels 0-4.
-    """
-    import numpy as np
-    sorted_indices = sorted(scan_indices)
-    # Split into 5 nearly equal groups
-    groups = np.array_split(sorted_indices, 5)
-    index_to_label = {}
-    for label, group in enumerate(groups):
-        for idx in group:
-            index_to_label[idx] = label
-    # Map back to original order
-    labels = [index_to_label[idx] for idx in scan_indices]
-    return labels
 
 class RewardAwareModel(nn.Module):
     def __init__(self, num_classes=5, pretrained=True, dropout_rate=0.2):
@@ -4160,7 +4157,7 @@ Combination of Barlow Twins model and Hybrid Model
 """
 
 class CombinedBT_HB_Classifier:
-    def __init__(self, bt_model_path, hb_model_path):
+    def __init__(self, bt_model_path, hb_model_path, parent_folder):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') and torch.has_mps and torch.mps.is_available() else 'cpu')
 
 
@@ -4183,6 +4180,37 @@ class CombinedBT_HB_Classifier:
             "bt_result": [],
             "hb_result": []
         }
+
+        self.data = {
+            "scan_indices": [],
+            "class_label": [],
+            "disagreed_classes": [],
+            "average_class_difference": 0,
+            "most_common_class_disagreement": 0
+        }
+
+        file_paths = []
+        file_paths = get_all_ibw_files(parent_folder)
+
+        for i, file_path in enumerate(file_paths):
+            print(f"Processing file {i+1}/{len(file_paths)}: {file_path}")
+        
+            # Get scan index if available from training
+            scan_index = extract_scan_index_from_filename(file_path)
+            self.data["scan_indices"].append(scan_index)
+
+        # Map scan_indices to class labels
+        if self.data["scan_indices"]:
+            self.data["class_label"] = generate_labels_from_scan_indices(self.data["scan_indices"])
+    
+        file_paths = []
+        file_paths = get_all_ibw_files(parent_folder)
+
+        for i, file_path in enumerate(file_paths):
+            print(f"Processing file {i+1}/{len(file_paths)}: {file_path}")
+        
+            # Get scan index if available from training
+            self.data["scan_indices"].append(extract_scan_index_from_filename(file_path))
 
         # No further instantiations needed
     
@@ -4223,7 +4251,74 @@ class CombinedBT_HB_Classifier:
         # We now have access to both model's results, which means that we can join
         # their combined prediction.
 
+        # Call to clear the console
+        # clear_console()
+        print('\n \n')
+
+        # For use in CLI
+        BOLD_START = '\033[1m'
+        BOLD_END = '\033[0m'
+
+        # Start comparison for errors
         if np.argmax(self.results['bt_result']['probabilities']) != self.results['hb_result']['predicted_class']:
-            print(f"Models did not agree on classification.")
+            print(f"Models {BOLD_START}did not agree{BOLD_END} on classification of {file_path}.")
+            print(f"Hybrid model classified input as class {BOLD_START}{self.results['hb_result']['predicted_class']}{BOLD_END}.")
+            print(f"Barlow Twins model classified input as class {BOLD_START}{np.argmax(self.results['bt_result']['probabilities'])}{BOLD_END}")
+
+            # Add the disagreed classes (not from indices) here
+            # Find the scan index for this file
+            scan_index = extract_scan_index_from_filename(file_path)
+            # Find the true class label for this scan index (if available)
+            if scan_index in self.data["scan_indices"]:
+                idx = self.data["scan_indices"].index(scan_index)
+                true_class = self.data["class_label"][idx]
+            else:
+                true_class = None
+
+            # Store the disagreement info with true class label
+            self.data['disagreed_classes'].append(true_class)
+            print(f"True class label for scan index {scan_index}: {true_class}")
+
         else:
-            print(f"Models agreed on classification of {file_path} as {self.results['hb_result']['predicted_class']}.")
+            print(f"Models {BOLD_START}agreed{BOLD_END} on classification of {file_path} as {BOLD_START}class {self.results['hb_result']['predicted_class']}{BOLD_END}.")
+
+    def process_disagreement(self):
+        # For use in CLI
+        BOLD_START = '\033[1m'
+        BOLD_END = '\033[0m'
+
+        print(f"Disagreed classes (list): {self.data['disagreed_classes']}")
+        self.data["average_class_difference"] = np.average(self.data['disagreed_classes'])
+        
+        def most_frequent(List):
+            return max(set(List), key=List.count)
+        
+        self.data["most_common_class_disagreement"] = most_frequent(self.data["disagreed_classes"])
+        
+        print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
+        print(f"Most common class disagreed on: {BOLD_START}Class {self.data["most_common_class_disagreement"]}{BOLD_END}")
+
+
+# if __name__ == "__main__":
+#     import argparse
+#     parser = argparse.ArgumentParser(description="Run dual prediction using CombinedBT_HB_Classifier.")
+#     parser.add_argument('--file', type=str, required=False, nargs='+',
+#                         default=['exp_data/June 18/wear_out/Wear_out_0015.ibw'],
+#                         help='Path to the .ibw file to classify ')
+#     args = parser.parse_args()
+
+#     # Join the file path parts in case of spaces
+#     file_path = ' '.join(args.file)
+#     print(f"{file_path}")
+
+#     parent_folder = 'exp_data/June 18/'  # file_path is the parent folder path from args
+#     file_paths = get_all_ibw_files(parent_folder)
+#     print(f"Found {len(file_paths)} .ibw files in {parent_folder} and its subfolders.")
+
+#     bt_model_path = 'barlow_twins_multiclass_classifier_v1.pth'
+#     hb_model_path = 'hybrid_model_v1.pth'
+#     cmodel = CombinedBT_HB_Classifier(bt_model_path, hb_model_path, parent_folder)
+
+#     for file_path in file_paths:
+#         cmodel.dual_predict(file_path)
+#         cmodel.process_disagreement()

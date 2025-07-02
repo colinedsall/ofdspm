@@ -9,8 +9,6 @@ matplotlib          # Plotting images (synthetic)
 igor2               # For igor file processing
 scikit-learn        # ML
 xgboost             # ML (XGBoost)
-
-seaborn
-
 torch
-torchvision
+torchvision 
+seaborn
