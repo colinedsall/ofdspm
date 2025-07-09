@@ -1,8 +1,8 @@
 """
 Filename:           tools.py
 Author:             Colin Edsall
-Date:               June 26, 2025
-Version:            2
+Date:               July 9, 2025
+Version:            3
 Changelog:          (Version 1) Initial commit.
 Description:        This python file contains scripts needed for training  either the Barlow Twins approach 
                     for a model to predict the condition of an AFM tip based on trace and image data, or the
@@ -18,6 +18,10 @@ Description:        This python file contains scripts needed for training  eithe
                     Changed to allow plotting and comparison of a hybrid model to the Barlow
                     Twins model. We also begin looking at using both models in conjunction to receive
                     a certain prediction.
+
+                    (Version 3) Changes made to reward functions to reflect experimental findings for
+                    important data trends, instead of what we assumed were the best. This may increase
+                    the accuracy of the model as compared to purely image-based models.
 """
 
 # Torch, for accessing models
@@ -726,15 +730,16 @@ class AugmentedIBWDataset(Dataset):
     def __init__(self, ibw_files, labels=None, scan_indices=None, 
                  compute_rewards=False, use_augmentation=True, 
                  augmentation_factor=72, 
-                 reward_weights={
-                        'height_consistency': 0.25,
-                        'phase_consistency': 0.25, 
-                        'sharpness': 0.15,
-                        'snr': 0.15,
-                        'data_diversity': 0.01,
-                        'tip_freshness': 0.08,
-                        'scan_rate': 0.02
-                } ):
+                 reward_weights = {
+                                        'phase_consistency': 0.20,
+                                        'amplitude_consistency': 0.15,
+                                        'tip_freshness': 0.20,
+                                        'amplitude_std': 0.15,
+                                        'height_entropy': 0.20,
+                                        'phase_std': 0.20,
+                                        'height_skew': 0.15,
+                                        'phase_skew': 0.15
+                                    } ):
         """
         Inputs:
             ibw_files: list of IBW file paths
@@ -768,7 +773,8 @@ class AugmentedIBWDataset(Dataset):
             self.rewards = []
             for i, file_path in enumerate(ibw_files):
                 ibw_data = load_ibw(file_path)
-                reward = compute_reward(ibw_data, scan_index=self.scan_indices[i], weights=reward_weights)
+                reward = compute_reward_with_top_features(
+                    ibw_data, scan_index=self.scan_indices[i], weights=reward_weights)
                 self.rewards.append(reward)
             
             # Normalize rewards
@@ -1017,12 +1023,215 @@ def compute_reward(ibw_data,
     
     return total_reward
 
+def compute_reward_joint(ibw_data,
+                    scan_index=0, 
+                    weights = {
+                        'height_consistency': 0.25,
+                        'phase_consistency': 0.25, 
+                        'sharpness': 0.15,
+                        'snr': 0.15,
+                        'data_diversity': 0.01,
+                        'tip_freshness': 0.08,
+                        'scan_rate': 0.02
+                        }, 
+                    normalize_rewards=True):
+    """
+    Improved reward function with better scaling and additional quality metrics.
+
+    Configure the weights away from experimentally-determined weights as needed. As is shown, the most
+    important metrics are given above.
+    """
+    ch_names = ibw_data.channels
+    
+    # Extract data
+    height_trace = ibw_data.data[ch_names.index('Height (T)')] 
+    height_retrace = ibw_data.data[ch_names.index('Height (RT)')]
+    phase_trace = ibw_data.data[ch_names.index('Phase (T)')] 
+    phase_retrace = ibw_data.data[ch_names.index('Phase (RT)')]
+    
+    # Extract scan rate
+    scan_rate = ibw_data.header.get('ScanRate', 1.0)
+    
+    rewards = {}
+    
+    # 1. Height Consistency (Trace vs Retrace)
+    min_rows = min(height_trace.shape[0], height_retrace.shape[0])
+    if min_rows > 0:
+        height_diff = height_trace[:min_rows, :] - height_retrace[:min_rows, :]
+        mae_height = np.mean(np.abs(height_diff))
+        # Convert to similarity score (0 to 1, where 1 is perfect match)
+        # Use exponential decay instead of inverse
+        rewards['height_consistency'] = np.exp(-mae_height / np.std(height_trace))
+    else:
+        rewards['height_consistency'] = 0.0
+    
+    # 2. Phase Consistency (Trace vs Retrace)  
+    min_rows_phase = min(phase_trace.shape[0], phase_retrace.shape[0])
+    if min_rows_phase > 0:
+        phase_diff = phase_trace[:min_rows_phase, :] - phase_retrace[:min_rows_phase, :]
+        phase_std = np.std(phase_diff)
+        # Normalize by the dynamic range of phase data
+        phase_range = np.ptp(phase_trace)  # peak-to-peak
+        if phase_range > 0:
+            normalized_phase_std = phase_std / phase_range
+            rewards['phase_consistency'] = np.exp(-5 * normalized_phase_std)  # More sensitive
+        else:
+            rewards['phase_consistency'] = 1.0
+    else:
+        rewards['phase_consistency'] = 0.0
+    
+    # 3. Image Sharpness/Focus (using gradient variance)
+    height_gradients = np.gradient(height_trace)
+    gradient_variance = np.var(height_gradients)
+    # Normalize and convert to 0-1 score
+    rewards['sharpness'] = np.tanh(gradient_variance / 1000.0)  # Adjust scaling as needed
+    
+    # 4. Signal-to-Noise Ratio
+    height_signal = np.mean(height_trace)
+    height_noise = np.std(height_trace)
+    if height_noise > 0:
+        snr = abs(height_signal) / height_noise
+        rewards['snr'] = np.tanh(snr / 10.0)  # Normalize SNR
+    else:
+        rewards['snr'] = 1.0
+    
+    # 5. Data Quality (check for artifacts, saturation, etc.)
+    # Detect if data is clipped/saturated
+    height_flat = height_trace.flatten()
+    unique_values = len(np.unique(height_flat))
+    total_pixels = len(height_flat)
+    diversity_ratio = unique_values / total_pixels
+    rewards['data_diversity'] = min(diversity_ratio * 10, 1.0)  # Scale to 0-1
+    
+    # 6. Scan Index Penalty (prefer earlier scans, indicating tip quality)
+    # Use exponential decay instead of linear
+    max_expected_scans = 35  # Adjust based on your typical experiment
+    rewards['tip_freshness'] = np.exp(-scan_index / max_expected_scans)
+    
+    # 7. Scan Rate Appropriateness (if you have an optimal range)
+    optimal_scan_rate = 2.0  # Hz, adjust based on your system
+    scan_rate_penalty = abs(scan_rate - optimal_scan_rate) / optimal_scan_rate
+    rewards['scan_rate'] = np.exp(-scan_rate_penalty)
+    
+    # Weighted combination
+    total_reward = sum(weights[key] * rewards[key] for key in weights.keys())
+    
+    return total_reward, rewards
+
+def compute_reward_with_top_features(ibw_data,
+                                     scan_index=0, 
+                                     weights = {
+                                        'phase_consistency': 0.20,
+                                        'amplitude_consistency': 0.15,
+                                        'height_consistency': 0.15,
+                                        'tip_freshness': 0.20,
+                                        'amplitude_std': 0.15,
+                                        'height_entropy': 0.20,
+                                        'phase_std': 0.20,
+                                        'height_skew': 0.15,
+                                        'phase_skew': 0.15
+                                    },
+                                     normalize_rewards=True,
+                                     return_all=False):
+    import numpy as np
+
+    ch_names = ibw_data.channels
+    rewards = {}
+
+    # Extract data
+    amp_trace = ibw_data.data[ch_names.index('Amplitude (T)')]
+    amp_retrace = ibw_data.data[ch_names.index('Amplitude (RT)')]
+    phase_trace = ibw_data.data[ch_names.index('Phase (T)')]
+    phase_retrace = ibw_data.data[ch_names.index('Phase (RT)')]
+    height_trace = ibw_data.data[ch_names.index('Height (T)')]
+    height_retrace = ibw_data.data[ch_names.index('Height (RT)')]
+
+    # --- 1. Phase Consistency ---
+    min_rows_phase = min(phase_trace.shape[0], phase_retrace.shape[0])
+    if min_rows_phase > 0:
+        phase_diff = phase_trace[:min_rows_phase, :] - phase_retrace[:min_rows_phase, :]
+        phase_range = np.ptp(phase_trace)
+        if phase_range > 0:
+            normalized_std = np.std(phase_diff) / phase_range
+            rewards['phase_consistency'] = np.exp(-5 * normalized_std)
+        else:
+            rewards['phase_consistency'] = 1.0
+    else:
+        rewards['phase_consistency'] = 0.0
+
+    # --- 2. Height Consistency ---
+    min_rows_phase = min(height_trace.shape[0], height_retrace.shape[0])
+    if min_rows_phase > 0:
+        height_diff = height_trace[:min_rows_phase, :] - height_retrace[:min_rows_phase, :]
+        height_range = np.ptp(height_retrace)
+        if height_range > 0:
+            normalized_std = np.std(height_diff) / height_range
+            rewards['height_consistency'] = np.exp(-10 * normalized_std)
+        else:
+            rewards['height_consistency'] = 1.0
+    else:
+        rewards['height_consistency'] = 0.0
+
+    # --- 2. Tip Freshness ---
+    max_expected_scans = 100
+    rewards['tip_freshness'] = np.exp(-scan_index / max_expected_scans)
+
+    # --- 3. Amplitude Std ---
+    rewards['amplitude_std'] = 1.0 - ( np.tanh(np.std(amp_trace) / 0.5) * 10e7)
+
+    # --- 4. Height Entropy ---
+    height_flat = height_trace.flatten()
+    hist, _ = np.histogram(height_flat, bins=512, density=False)
+    hist = hist.astype(np.float64)
+    hist /= np.sum(hist)  # normalize to probabilities
+    hist += 1e-8  # avoid log(0)
+    entropy = -np.sum(hist * np.log2(hist))
+    if not np.isfinite(entropy) or entropy < 0:
+        entropy = 0.0
+    rewards['height_entropy'] = 1.0 - min(entropy / 10.0, 1.0)
+
+    # --- 5. Phase Std ---
+    # Normalize phase std by the dynamic range of phase_trace to ensure comparability across scans
+    phase_range = np.ptp(phase_trace)
+    if phase_range > 0:
+        normalized_phase_std = np.std(phase_trace) / phase_range
+        rewards['phase_std'] = 1.0 - min(normalized_phase_std, 1.0)
+    else:
+        rewards['phase_std'] = 1.0
+
+    # --- 6. Height Skew ---
+    height_skew = np.mean(((height_trace - np.mean(height_trace)) / (np.std(height_trace) + 1e-8))**3)
+    rewards['height_skew'] = 1.0 - min(abs(height_skew) / 1.25, 1.0)  # less penalization for skew
+
+    # --- 7. Amplitude Consistency ---
+    min_rows_amp = min(amp_trace.shape[0], amp_retrace.shape[0])
+    if min_rows_amp > 0:
+        amp_diff = amp_trace[:min_rows_amp, :] - amp_retrace[:min_rows_amp, :]
+        amp_range = np.ptp(amp_trace)
+        if amp_range > 0:
+            normalized_amp_std = np.std(amp_diff) / amp_range
+            rewards['amplitude_consistency'] = np.exp(-5 * normalized_amp_std)
+        else:
+            rewards['amplitude_consistency'] = 1.0
+    else:
+        rewards['amplitude_consistency'] = 0.0
+
+    # --- 8. Phase Skew ---
+    phase_skew = np.mean(((phase_trace - np.mean(phase_trace)) / (np.std(phase_trace) + 1e-8))**3)
+    rewards['phase_skew'] = 1.0 - min(abs(phase_skew) / 5.0, 1.0)
+
+    # --- Weighted Reward Total ---
+    total_reward = sum(weights[key] * rewards[key] for key in weights)
+
+    if return_all:
+        return total_reward, rewards
+    else:
+        return total_reward
+
 class RewardAwareModel(nn.Module):
     def __init__(self, num_classes=5, pretrained=True, dropout_rate=0.2):
         super(RewardAwareModel, self).__init__()
 
-
-        
         # Base model
         self.backbone = models.resnet18(pretrained=pretrained)
         
@@ -1743,16 +1952,22 @@ def load_trained_hybrid_model(model_path, num_classes=5, device='cpu'):
     return model
 
 def hb_predict_ibw(model, ibw_file_path, transform, device, 
-                   reward_mean=None, reward_std=None, scan_index=None):
+                   reward_mean=None, reward_std=None, scan_index=None,
+                   use_cropped=False ):
     """
     Predict quality class and reward for a single IBW file using all augmentations.
     """
     import warnings
     model.eval()
     try:
-        # Load and preprocess the IBW file
-        ibw_data = load_ibw(ibw_file_path)
-        height_img = ibw_data.z
+
+        # Load and preprocess the IBW file, depending on if it's cropped (dataframe)
+        if not use_cropped:
+            ibw_data = load_ibw(ibw_file_path)
+            height_img = ibw_data.z
+        else:
+            ibw_data = load_ibw(ibw_file_path)
+            height_img = ibw_data.z
 
         # Convert to PIL image (if not already)
         from PIL import Image
@@ -1803,9 +2018,9 @@ def hb_predict_ibw(model, ibw_file_path, transform, device,
                 predicted_reward_original = avg_reward_normalized
 
             if scan_index is not None:
-                actual_reward = compute_reward(ibw_data, scan_index=scan_index)
+                actual_reward = compute_reward_with_top_features(ibw_data, scan_index=scan_index)
             else:
-                actual_reward = compute_reward(ibw_data, scan_index=0)
+                actual_reward = compute_reward_with_top_features(ibw_data, scan_index=0)
 
         quality_descriptions = {
             0: "Excellent (Class 0)",
@@ -2236,15 +2451,16 @@ def train_barlow_twins(model, dataloader, loss_fn, optimizer, device, epochs):
 
 class EnhancedBT_AFMDataset(Dataset):
     def __init__(self, ibw_data_list, scan_indices, compute_rewards=False, transform=None, 
-                 use_augmentation=True, crops_per_image=9, reward_weights={
-                        'height_consistency': 0.25,
-                        'phase_consistency': 0.25, 
-                        'sharpness': 0.15,
-                        'snr': 0.15,
-                        'data_diversity': 0.01,
-                        'tip_freshness': 0.08,
-                        'scan_rate': 0.02
-                } ):
+                 use_augmentation=True, crops_per_image=9, reward_weights= {
+                                        'phase_consistency': 0.20,
+                                        'amplitude_consistency': 0.15,
+                                        'tip_freshness': 0.20,
+                                        'amplitude_std': 0.15,
+                                        'height_entropy': 0.20,
+                                        'phase_std': 0.20,
+                                        'height_skew': 0.15,
+                                        'phase_skew': 0.15
+                                    } ):
         """
         Enhanced dataset that uses scan indices to generate multi-class labels
         
@@ -2274,7 +2490,7 @@ class EnhancedBT_AFMDataset(Dataset):
             print("Computing rewards for all images...")
             self.rewards = []
             for i, data in enumerate(ibw_data_list):
-                reward = compute_reward(data, scan_index=scan_indices[i], weights=reward_weights)
+                reward = compute_reward_with_top_features(data, scan_index=scan_indices[i], weights=reward_weights)
                 self.rewards.append(reward)
             
             # Normalize rewards
@@ -3145,7 +3361,6 @@ class BarlowTwinsClassifier(nn.Module):
             nn.Linear(128, num_classes)
         )
         
-        # Optional reward prediction head
         self.include_reward_head = include_reward_head
         if include_reward_head:
             self.reward_predictor = nn.Sequential(
@@ -4301,27 +4516,54 @@ class CombinedBT_HB_Classifier:
         print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
         print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
+# if __name__ == "__main__":
+    # import argparse
+    # parser = argparse.ArgumentParser(description="Run dual prediction using CombinedBT_HB_Classifier.")
+    # parser.add_argument('--file', type=str, required=False, nargs='+',
+    #                     default=['exp_data/June 18/wear_out/Wear_out_0015.ibw'],
+    #                     help='Path to the .ibw file to classify ')
+    # args = parser.parse_args()
+
+    # # Join the file path parts in case of spaces
+    # file_path = ' '.join(args.file)
+    # print(f"{file_path}")
+
+    # parent_folder = 'exp_data/June 18/'  # file_path is the parent folder path from args
+    # file_paths = get_all_ibw_files(parent_folder)
+    # print(f"Found {len(file_paths)} .ibw files in {parent_folder} and its subfolders.")
+
+    # bt_model_path = 'barlow_twins_multiclass_classifier_v1.pth'
+    # hb_model_path = 'hybrid_model.pth'
+    # cmodel = CombinedBT_HB_Classifier(bt_model_path, hb_model_path, parent_folder)
+
+    # for file_path in file_paths:
+    #     cmodel.dual_predict(file_path)
+    #     cmodel.process_disagreement()
 
 # if __name__ == "__main__":
-#     import argparse
-#     parser = argparse.ArgumentParser(description="Run dual prediction using CombinedBT_HB_Classifier.")
-#     parser.add_argument('--file', type=str, required=False, nargs='+',
-#                         default=['exp_data/June 18/wear_out/Wear_out_0015.ibw'],
-#                         help='Path to the .ibw file to classify ')
-#     args = parser.parse_args()
+#     model = load_trained_hybrid_model('hybrid_model.pth')
+#     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') and torch.has_mps and torch.mps.is_available() else 'cpu')
 
-#     # Join the file path parts in case of spaces
-#     file_path = ' '.join(args.file)
-#     print(f"{file_path}")
+#     # Basic 3x3 crops (9 total)
+#     crops_df = create_crops_from_ibw('data.ibw', return_format='dataframe')
+#     print(f"Created {len(crops_df)} crops")
 
-#     parent_folder = 'exp_data/June 18/'  # file_path is the parent folder path from args
-#     file_paths = get_all_ibw_files(parent_folder)
-#     print(f"Found {len(file_paths)} .ibw files in {parent_folder} and its subfolders.")
+#     # All 72 augmented crops (matches training data)
+#     augmented_crops = create_augmented_crops_from_ibw('data.ibw', return_format='array')
+#     print(f"Shape: {augmented_crops.shape}")  # Should be (72, 224, 224)
 
-#     bt_model_path = 'barlow_twins_multiclass_classifier_v1.pth'
-#     hb_model_path = 'hybrid_model.pth'
-#     cmodel = CombinedBT_HB_Classifier(bt_model_path, hb_model_path, parent_folder)
+#     # Use crops for prediction
+#     individual_predictions = predict_from_ibw_crops(
+#         model, 'data.ibw', 'metadata.pkl', device, crop_individually=True
+#     )
 
-#     for file_path in file_paths:
-#         cmodel.dual_predict(file_path)
-#         cmodel.process_disagreement()
+#     # Or use the full augmentation pipeline (recommended)
+#     full_prediction = predict_from_ibw_crops(
+#         model, 'data.ibw', 'metadata.pkl', device, crop_individually=False
+#     )
+
+#     # Process multiple files
+#     crop_dataframes = batch_create_crops_from_ibw_files(
+#         ['file1.ibw', 'file2.ibw', 'file3.ibw'],
+#         output_dir='crops_output'
+#     )
