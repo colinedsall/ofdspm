@@ -4,4 +4,8 @@ __pycache__/
 .DS_Store
 .vscode/
 models/
-
+model_data/
+roc_analysis/
+trace_models/
+exp_data/
+exp_data2/
