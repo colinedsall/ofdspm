@@ -1306,6 +1306,127 @@ def validate_model(model, val_dataloader, device, use_adaptive_loss=False, crite
     
     return total_loss / len(val_dataloader)
 
+def validate_with_augmented_transform(model, val_dataloader, device, transform, 
+                                    use_adaptive_loss=False, criterion=None, 
+                                    max_augmentations=None):
+    """
+    Validation function using your AugmentedTransform class
+    """
+    model.eval()
+    all_predictions = []
+    all_labels = []
+    all_rewards_true = []
+    all_rewards_pred = []
+    total_val_loss = 0.0
+    num_batches = 0
+    
+    # Loss functions
+    if not use_adaptive_loss:
+        classification_criterion = nn.CrossEntropyLoss()
+        reward_criterion = nn.MSELoss()
+    
+    with torch.no_grad():
+        for batch_data in val_dataloader:
+            if len(batch_data) != 4:
+                continue
+                
+            inputs, labels, rewards, scan_indices = batch_data
+            
+            batch_predictions = []
+            batch_rewards = []
+            
+            for i in range(inputs.size(0)):  # For each image in batch
+                try:
+                    # Convert tensor back to PIL Image for your transform
+                    # Assuming input is normalized, we need to denormalize first
+                    single_tensor = inputs[i]
+                    
+                    # Denormalize if needed (reverse of your normalization)
+                    if transform.normalize:
+                        # Reverse normalization
+                        denorm_tensor = single_tensor.clone()
+                        for t, m, s in zip(denorm_tensor, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]):
+                            t.mul_(s).add_(m)
+                    else:
+                        denorm_tensor = single_tensor
+                    
+                    # Clamp to [0, 1] and convert to PIL
+                    denorm_tensor = torch.clamp(denorm_tensor, 0, 1)
+                    pil_img = transforms.ToPILImage()(denorm_tensor)
+                    
+                    # Apply your AugmentedTransform (returns list of 72 tensors)
+                    augmented_tensors = transform(pil_img)
+                    
+                    # Optionally limit number of augmentations for computational efficiency
+                    if max_augmentations and len(augmented_tensors) > max_augmentations:
+                        # Randomly sample or take first N augmentations
+                        import random
+                        augmented_tensors = random.sample(augmented_tensors, max_augmentations)
+                    
+                    # Stack into batch and move to device
+                    if augmented_tensors:
+                        batch_tensor = torch.stack(augmented_tensors).to(device)
+                        
+                        # Forward pass through model
+                        class_outputs, reward_outputs = model(batch_tensor)
+                        
+                        # Apply softmax and average probabilities (matching your hb_predict_ibw logic)
+                        probabilities = torch.softmax(class_outputs, dim=1)
+                        avg_probabilities = probabilities.mean(dim=0)
+                        avg_reward = reward_outputs.mean().item()
+                        
+                        # Get prediction from averaged probabilities
+                        predicted_class = torch.argmax(avg_probabilities).item()
+                        batch_predictions.append(predicted_class)
+                        batch_rewards.append(avg_reward)
+                    else:
+                        # Fallback: use original tensor
+                        single_input = inputs[i].unsqueeze(0).to(device)
+                        class_outputs, reward_outputs = model(single_input)
+                        predicted_class = torch.argmax(class_outputs, dim=1).item()
+                        batch_predictions.append(predicted_class)
+                        batch_rewards.append(reward_outputs.item())
+                        
+                except Exception as e:
+                    print(f"Error processing image {i}: {e}")
+                    # Fallback to single image prediction
+                    single_input = inputs[i].unsqueeze(0).to(device)
+                    class_outputs, reward_outputs = model(single_input)
+                    predicted_class = torch.argmax(class_outputs, dim=1).item()
+                    batch_predictions.append(predicted_class)
+                    batch_rewards.append(reward_outputs.item())
+            
+            # Collect all predictions and labels
+            all_predictions.extend(batch_predictions)
+            all_labels.extend(labels.numpy())
+            all_rewards_true.extend(rewards.numpy())
+            all_rewards_pred.extend(batch_rewards)
+            
+            # Calculate loss using standard forward pass (for consistency)
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            rewards = rewards.to(device)
+            
+            class_outputs, reward_outputs = model(inputs)
+            
+            if use_adaptive_loss and criterion is not None:
+                batch_loss, _, _ = criterion(class_outputs, labels, reward_outputs, rewards)
+            else:
+                class_loss = classification_criterion(class_outputs, labels)
+                reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
+                batch_loss = class_loss + 0.1 * reward_loss
+            
+            total_val_loss += batch_loss.item()
+            num_batches += 1
+    
+    # Calculate final metrics
+    avg_val_loss = total_val_loss / num_batches if num_batches > 0 else float('inf')
+    accuracy = accuracy_score(all_labels, all_predictions)
+    
+    print(f"Validation accuracy score: {accuracy}")
+
+    return avg_val_loss, accuracy
+
 def train_hybrid_model(model, train_dataloader, val_dataloader, optimizer, device, 
                         num_epochs=10, use_adaptive_loss=True):
     
@@ -1768,8 +1889,13 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
         reward_criterion = nn.MSELoss()
     
     # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
-                                                    factor=0.5, patience=3)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
+    #                                                 factor=0.5, patience=3)
+
+    # Cosine Annealing, gradient change may be better for this case
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs, eta_min=1e-6
+    )
     
     best_val_loss = float('inf')
     best_val_accuracy = 0.0
@@ -1812,7 +1938,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
                 else:
                     class_loss = classification_criterion(class_outputs, labels)
                     reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
-                    total_loss = class_loss + 0.1 * reward_loss
+                    total_loss = class_loss + 0.25 * reward_loss
                 
                 # Backward pass
                 total_loss.backward()
@@ -1852,9 +1978,14 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
             
             # Validation phase
             print(f"  Running validation...")
-            val_loss, val_accuracy = validate_model_with_accuracy(
-                model, val_dataloader, device, use_adaptive_loss, 
-                criterion if use_adaptive_loss else None
+
+            # Define the transform as an augmented transform
+            aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
+
+            val_loss, val_accuracy = validate_with_augmented_transform(
+                model, val_dataloader, device, aug_transform,
+                use_adaptive_loss, criterion if use_adaptive_loss else None,
+                max_augmentations=20
             )
             
             # Learning rate scheduling
@@ -1884,7 +2015,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
                       f"Reward: {torch.exp(-criterion.log_var_reward).item():.4f}")
             
             # Save best model
-            if val_loss < best_val_loss:
+            if val_accuracy < best_val_accuracy:
                 best_val_loss = val_loss
                 best_val_accuracy = val_accuracy
                 
