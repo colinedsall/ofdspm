@@ -1,8 +1,8 @@
 """
 Filename:           tools.py
 Author:             Colin Edsall
-Date:               July 9, 2025
-Version:            3
+Date:               July 10, 2025
+Version:            4
 Changelog:          (Version 1) Initial commit.
 Description:        This python file contains scripts needed for training  either the Barlow Twins approach 
                     for a model to predict the condition of an AFM tip based on trace and image data, or the
@@ -22,6 +22,11 @@ Description:        This python file contains scripts needed for training  eithe
                     (Version 3) Changes made to reward functions to reflect experimental findings for
                     important data trends, instead of what we assumed were the best. This may increase
                     the accuracy of the model as compared to purely image-based models.
+
+                    (Version 4) Changes made to make the entire training pipeline for the hybrid model
+                    configurable. This involves changing the learning scheduler, optimizer, and other
+                    configurable training elements into a class so that the user can easily modify and
+                    compare values used during training instead of hard-defined constants.
 """
 
 # Torch, for accessing models
@@ -57,6 +62,7 @@ import matplotlib.animation as animation
 from collections import deque
 from IPython.display import display, clear_output
 # from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from collections import Counter
 
 # PCA analysis
 from sklearn.decomposition import PCA
@@ -1982,10 +1988,14 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
             # Define the transform as an augmented transform
             aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
 
-            val_loss, val_accuracy = validate_with_augmented_transform(
-                model, val_dataloader, device, aug_transform,
-                use_adaptive_loss, criterion if use_adaptive_loss else None,
-                max_augmentations=20
+            # val_loss, val_accuracy = validate_with_augmented_transform(
+            #     model, val_dataloader, device, aug_transform,
+            #     use_adaptive_loss, criterion if use_adaptive_loss else None,
+            #     max_augmentations=20
+            # )
+            val_loss, val_accuracy = validate_model_with_accuracy(
+                model, val_dataloader, device, use_adaptive_loss, 
+                criterion if use_adaptive_loss else None
             )
             
             # Learning rate scheduling
@@ -2015,7 +2025,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
                       f"Reward: {torch.exp(-criterion.log_var_reward).item():.4f}")
             
             # Save best model
-            if val_accuracy < best_val_accuracy:
+            if val_accuracy > best_val_accuracy:
                 best_val_loss = val_loss
                 best_val_accuracy = val_accuracy
                 
@@ -2185,6 +2195,100 @@ def hb_predict_ibw(model, ibw_file_path, transform, device,
             'predicted_class': None
         }
 
+def hb_predict_like_training(model, ibw_file_path, transform, device,
+                          reward_mean=None, reward_std=None, scan_index=None,
+                          use_cropped=False):
+    """
+    Predict class and reward using the same logic as training/validation accuracy:
+    - Use argmax on logits
+    - Majority vote for classification over augmentations
+    - Mean of raw rewards
+
+    This is the most useful for creating accuracy plots to defend the model.
+    The prediction logic above in hb_predict_ibw() is more accurate for thresholds and
+    certainty during runtime events.
+
+    This model does not work with AUC-ROC curves as the torch max is not averaged and
+    does not return class-based confidences.
+    """
+    import warnings
+    model.eval()
+    try:
+        # Load and preprocess IBW
+        ibw_data = load_ibw(ibw_file_path)
+        height_img = ibw_data.z
+
+        # Normalize and convert to PIL
+        from PIL import Image
+        h_min = np.min(height_img)
+        h_max = np.max(height_img)
+        norm_img = 255 * (height_img - h_min) / (h_max - h_min + 1e-8)
+        norm_img = norm_img.astype(np.uint8)
+        pil_img = Image.fromarray(norm_img).convert("RGB")
+
+        # Apply augmentations
+        augmented_tensors = transform(pil_img)
+        if isinstance(augmented_tensors, torch.Tensor):
+            augmented_tensors = [augmented_tensors]
+        if not augmented_tensors:
+            warnings.warn(f"No augmentations for {ibw_file_path}")
+            return {'file_path': ibw_file_path, 'error': 'No augmentations', 'predicted_class': None}
+
+        # Stack to batch
+        batch_tensor = torch.stack(augmented_tensors).to(device)
+
+        with torch.no_grad():
+            class_outputs, reward_outputs = model(batch_tensor)
+
+            # Classification: argmax over logits
+            _, predictions = torch.max(class_outputs.data, 1)
+            predicted_classes = predictions.cpu().tolist()
+
+            # Majority vote
+            majority_class = Counter(predicted_classes).most_common(1)[0][0]
+
+            # Reward prediction
+            avg_reward_normalized = reward_outputs.mean().item()
+
+            if torch.isnan(class_outputs).any() or torch.isnan(reward_outputs).any():
+                warnings.warn(f"NaN in prediction for {ibw_file_path}")
+                return {'file_path': ibw_file_path, 'error': 'NaN in outputs', 'predicted_class': None}
+
+            # Denormalize reward
+            if reward_mean is not None and reward_std is not None and reward_std > 0:
+                predicted_reward_original = avg_reward_normalized * reward_std + reward_mean
+            else:
+                predicted_reward_original = avg_reward_normalized
+
+            actual_reward = compute_reward_with_top_features(ibw_data, scan_index or 0)
+
+        quality_descriptions = {
+            0: "Excellent (Class 0)",
+            1: "Good (Class 1)",
+            2: "Fair (Class 2)",
+            3: "Poor (Class 3)",
+            4: "Bad (Class 4)"
+        }
+
+        return {
+            'file_path': ibw_file_path,
+            'predicted_class': majority_class,
+            'quality_description': quality_descriptions[majority_class],
+            'confidence': predicted_classes.count(majority_class) / len(predicted_classes),
+            'predicted_reward_normalized': avg_reward_normalized,
+            'predicted_reward_original': predicted_reward_original,
+            'actual_reward': actual_reward,
+            'reward_difference': abs(predicted_reward_original - actual_reward),
+            'scan_index_used': scan_index or 0,
+            'num_augmentations': len(augmented_tensors)
+        }
+    
+    
+
+    except Exception as e:
+        print(f"Prediction failed for {ibw_file_path}: {e}")
+        return {'file_path': ibw_file_path, 'error': str(e), 'predicted_class': None}
+
 def hb_predict_with_metadata(model, ibw_file_paths, model_metadata_path, device):
     """
     Predict using the same normalization parameters as training
@@ -2238,6 +2342,72 @@ def hb_predict_with_metadata(model, ibw_file_paths, model_metadata_path, device)
         print(f"File: {os.path.basename(file_path)}, Extracted scan_index: {scan_index}")
         aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
         result = hb_predict_ibw(model, file_path, aug_transform, device, scan_index=scan_index)
+        results.append(result)
+        
+        if 'error' not in result:
+            print(f"Scan Index: {scan_index} Predicted: Class {result['predicted_class']} ({result['quality_description']}) "
+                  f"with {result['confidence']:.3f} confidence")
+        else:
+            print(f"  Error: {result['error']}")
+    
+    return results
+
+def hb_batch_predict_like_training(model, ibw_file_paths, model_metadata_path, device):
+    """
+    Predict batches of files with the training style.
+
+    This script handles a folder being passed in (aka ibw_file_paths) for the 
+    function hb_predict_like_training.
+    
+    Inputs:
+        model: Trained model
+        ibw_file_paths: List of IBW file paths
+        model_metadata_path: Path to saved training metadata (pickle file)
+        device: PyTorch device
+    
+    Outputs:
+        List of prediction results
+    """
+    import pickle
+    
+    # Load training metadata
+    try:
+        with open(model_metadata_path, 'rb') as f:
+            metadata = pickle.load(f)
+        
+        transform = metadata['transform']
+        reward_mean = metadata.get('reward_mean', None)
+        reward_std = metadata.get('reward_std', None)
+        file_to_index = metadata.get('file_to_index', {})  # Maps file paths to scan indices
+        
+        print(f"Loaded training metadata:")
+        print(f"  Reward normalization - Mean: {reward_mean}, Std: {reward_std}")
+        print(f"  Transform: {transform}")
+        
+    except FileNotFoundError:
+        print("Warning: No metadata file found. Using default parameters.")
+        # Use same transform as training
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                               std=[0.229, 0.224, 0.225]),
+        ])
+        reward_mean = reward_std = None
+        file_to_index = {}
+    
+    results = []
+    
+    print(f"Predicting quality for {len(ibw_file_paths)} files...")
+    
+    for i, file_path in enumerate(ibw_file_paths):
+        print(f"Processing file {i+1}/{len(ibw_file_paths)}: {file_path}")
+        
+        # Get scan index if available from training
+        scan_index = extract_scan_index_from_filename(file_path)
+        print(f"File: {os.path.basename(file_path)}, Extracted scan_index: {scan_index}")
+        aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
+        result = hb_predict_like_training(model, file_path, aug_transform, device, scan_index=scan_index)
         results.append(result)
         
         if 'error' not in result:
@@ -4022,7 +4192,6 @@ def bt_plot_confidence_vs_predicted_class(results, title="Confidence vs Predicte
     plt.grid(True)
     plt.show()
 
-
 """
 PCA Analysis for comparsion of the two mode.
 """
@@ -4647,54 +4816,29 @@ class CombinedBT_HB_Classifier:
         print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
         print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
-# if __name__ == "__main__":
-    # import argparse
-    # parser = argparse.ArgumentParser(description="Run dual prediction using CombinedBT_HB_Classifier.")
-    # parser.add_argument('--file', type=str, required=False, nargs='+',
-    #                     default=['exp_data/June 18/wear_out/Wear_out_0015.ibw'],
-    #                     help='Path to the .ibw file to classify ')
-    # args = parser.parse_args()
+class TrainingConfig:
+    def __init__(self, config_dict):
+        """
+        Initialize the training configuration from a text file or with default parameters.
+        """
+    
+        self.__dict__.update(config_dict)
 
-    # # Join the file path parts in case of spaces
-    # file_path = ' '.join(args.file)
-    # print(f"{file_path}")
+    def from_yaml(cls, filepath):
+        import yaml
+        with open(filepath, 'r') as f:
+            config_dict = yaml.safe_load(f)
+        return cls(config_dict)
+    
+    def to_yaml(self, filepath):
+        import yaml
+        with open(filepath, 'w') as f:
+            yaml.dump(self.__dict__, f)
+        
+    def create_dummy_yaml(self):
+        dummy_dict = {}
+        self.to_yaml('dummyyaml.yaml')
 
-    # parent_folder = 'exp_data/June 18/'  # file_path is the parent folder path from args
-    # file_paths = get_all_ibw_files(parent_folder)
-    # print(f"Found {len(file_paths)} .ibw files in {parent_folder} and its subfolders.")
-
-    # bt_model_path = 'barlow_twins_multiclass_classifier_v1.pth'
-    # hb_model_path = 'hybrid_model.pth'
-    # cmodel = CombinedBT_HB_Classifier(bt_model_path, hb_model_path, parent_folder)
-
-    # for file_path in file_paths:
-    #     cmodel.dual_predict(file_path)
-    #     cmodel.process_disagreement()
-
-# if __name__ == "__main__":
-#     model = load_trained_hybrid_model('hybrid_model.pth')
-#     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') and torch.has_mps and torch.mps.is_available() else 'cpu')
-
-#     # Basic 3x3 crops (9 total)
-#     crops_df = create_crops_from_ibw('data.ibw', return_format='dataframe')
-#     print(f"Created {len(crops_df)} crops")
-
-#     # All 72 augmented crops (matches training data)
-#     augmented_crops = create_augmented_crops_from_ibw('data.ibw', return_format='array')
-#     print(f"Shape: {augmented_crops.shape}")  # Should be (72, 224, 224)
-
-#     # Use crops for prediction
-#     individual_predictions = predict_from_ibw_crops(
-#         model, 'data.ibw', 'metadata.pkl', device, crop_individually=True
-#     )
-
-#     # Or use the full augmentation pipeline (recommended)
-#     full_prediction = predict_from_ibw_crops(
-#         model, 'data.ibw', 'metadata.pkl', device, crop_individually=False
-#     )
-
-#     # Process multiple files
-#     crop_dataframes = batch_create_crops_from_ibw_files(
-#         ['file1.ibw', 'file2.ibw', 'file3.ibw'],
-#         output_dir='crops_output'
-#     )
+if __name__ == "__main__":
+    test = TrainingConfig({})
+    
