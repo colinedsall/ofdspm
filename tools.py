@@ -85,6 +85,7 @@ import json
 from datetime import datetime
 from itertools import cycle
 import time
+import yaml
 
 """
 Adaptation of the API to handle this experimental data case. Note: this does not impact other experiments 
@@ -1862,7 +1863,8 @@ def validate_model_with_accuracy(model, val_dataloader, device, use_adaptive_los
 
 def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, optimizer, device, 
                                    num_epochs=10, use_adaptive_loss=True, use_jupyter=True,
-                                   plot_update_frequency=5, scroll_size=400):
+                                   plot_update_frequency=5, scroll_size=400, base_image_size=256,
+                                   crop_size=86):
     """
     Enhanced training function with improved real-time plotting
     
@@ -1900,7 +1902,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
 
     # Cosine Annealing, gradient change may be better for this case
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs, eta_min=1e-6
+        optimizer, T_max=10, eta_min=1e-6
     )
     
     best_val_loss = float('inf')
@@ -1942,9 +1944,9 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
                     total_loss, class_loss, reward_loss = criterion(
                         class_outputs, labels, reward_outputs, rewards)
                 else:
-                    class_loss = classification_criterion(class_outputs, labels)
                     reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
-                    total_loss = class_loss + 0.25 * reward_loss
+                    class_loss = torch.tensor(0.0, device=device)  # Dummy value for logging
+                    total_loss = reward_loss  # No classification loss
                 
                 # Backward pass
                 total_loss.backward()
@@ -1986,7 +1988,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
             print(f"  Running validation...")
 
             # Define the transform as an augmented transform
-            aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
+            aug_transform = AugmentedTransform(base_size=base_image_size, crop_size=crop_size, normalize=True)
 
             # val_loss, val_accuracy = validate_with_augmented_transform(
             #     model, val_dataloader, device, aug_transform,
@@ -4816,29 +4818,416 @@ class CombinedBT_HB_Classifier:
         print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
         print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
-class TrainingConfig:
-    def __init__(self, config_dict):
-        """
-        Initialize the training configuration from a text file or with default parameters.
-        """
-    
-        self.__dict__.update(config_dict)
+"""
+Config and building.
+"""
 
+class TrainingConfig:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    @classmethod
     def from_yaml(cls, filepath):
-        import yaml
         with open(filepath, 'r') as f:
             config_dict = yaml.safe_load(f)
-        return cls(config_dict)
-    
+
+        # Automatically lift 'training' section into top level
+        if 'training' in config_dict:
+            training_dict = config_dict.pop('training')
+            config_dict.update(training_dict)
+
+        return cls(**config_dict)
+
     def to_yaml(self, filepath):
-        import yaml
         with open(filepath, 'w') as f:
             yaml.dump(self.__dict__, f)
-        
-    def create_dummy_yaml(self):
-        dummy_dict = {}
-        self.to_yaml('dummyyaml.yaml')
 
-if __name__ == "__main__":
-    test = TrainingConfig({})
+    def print_config(self):
+        print(yaml.dump(self.__dict__, sort_keys=False, default_flow_style=False))
+
+def build_optimizer(config, model_params):
+    opt_cfg = config.optimizers  # now a dict with 'active' and 'available'
+    active_type = opt_cfg['active'].lower()
+
+    for opt in opt_cfg['available']:
+        if opt['type'].lower() == active_type:
+            params = opt.get('params', {})
+            if active_type == 'adam':
+                return optim.Adam(
+                    model_params,
+                    lr=params.get('lr', 1e-4),
+                    weight_decay=params.get('weight_decay', 1e-4)
+                )
+            else:
+                raise ValueError(f"Unsupported optimizer type: {active_type}")
+
+    raise ValueError(f"Active optimizer '{active_type}' not found in available optimizers.")
+
+def build_device(config):
+    device_type = config.device.lower()
+
+    if device_type == 'mps':
+        return torch.device('mps')
+    elif device_type == 'cuda':
+        return torch.device('cuda')
+    else:
+        # Default to previous auto script, just in case
+        return torch.device('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch, 'has_mps') 
+                            and torch.has_mps and torch.mps.is_available() else 'cpu')
+
+def get_active_scheduler_config(config):
+    sched_config = config.learning_schedulers
+    active_type = sched_config['active'].lower()
+
+    for sched in sched_config['available']:
+        if sched['type'].lower() == active_type:
+            return sched['type'], sched.get('params', {})
+
+    raise ValueError(f"Active scheduler '{active_type}' not found in available schedulers.")
+
+def build_scheduler(config, optimizer):
+    sched_type, params = get_active_scheduler_config(config)
     
+    if sched_type.lower() == 'reducelronplateau':
+        return optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
+    elif sched_type.lower() == 'cosineannealinglr':
+        return optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
+    else:
+        raise ValueError(f"Unsupported scheduler type: {sched_type}")
+    
+def build_training_components(config, model):
+    device = build_device(config)
+    
+    if model is not None:
+        model.to(device)
+
+    optimizer = build_optimizer(config, model.parameters() if model else [])
+    scheduler = build_scheduler(config, optimizer)
+
+    return {
+        'device': device,
+        'optimizer': optimizer,
+        'scheduler': scheduler,
+        'num_epochs': config.num_epochs,
+        'num_classes': config.num_classes,
+        'batch_size': config.training_batch_size,
+        'use_jupyter': config.training_uses_jupyter_notebook,
+        'use_adaptive_loss': config.use_adaptive_loss,
+        'non_adaptive_reward_weight': config.non_adaptive_reward_weight,
+        'train_split_weight': config.train_split_weight,
+        'output_filename': config.output_filename,
+        'plot_config': config.plotter,
+        'original_dataset': config.original_dataset,
+        'augmented_dataset': config.augmented_dataset,
+    }
+
+def hybrid_model_from_config(config_path="config.yaml"):
+    # Load config
+    config = TrainingConfig.from_yaml(config_path)
+    print("CONFIG KEYS:", config.__dict__.keys())
+
+    # Phase 1: Build device and training settings
+    device = build_device(config)
+    print(f"Using device: {device}")
+
+    # Load dataset
+    base_folder = config.original_dataset['base_folder']
+    dataset_folders = config.original_dataset['dataset_folders']
+    all_files, all_labels, all_scan_indices, dataset_info = load_multi_dataset([base_folder], dataset_folders)
+
+    print(f"\nDataset Summary:")
+    print(f"Total files: {len(all_files)}")
+    print(f"Label distribution: {np.bincount(all_labels)}")
+
+    print("\nCreating augmented dataset...")
+    dataset = AugmentedIBWDataset(
+        all_files,
+        all_labels,
+        all_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
+
+    print(f"Augmented dataset size: {len(dataset)} samples")
+    print(f"Augmentation ratio: {len(dataset) / len(all_files):.1f}x")
+
+    # Train/val split
+    train_size = int(config.train_split_weight * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+    # Dataloaders
+    batch_size = config.training_batch_size
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
+
+    print(f"Training batches: {len(train_dataloader)}")
+    print(f"Validation batches: {len(val_dataloader)}")
+
+    # Phase 2: Build model, optimizer, and scheduler now
+    model = RewardAwareModel(num_classes=config.num_classes, pretrained=True).to(device)
+    optimizer = build_optimizer(config, model.parameters())
+    scheduler = build_scheduler(config, optimizer)
+
+    print("\nStarting training...")
+
+    # Training function
+    train_losses, val_losses, val_accuracies, plotter = train_hybrid_model_with_config(
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        optimizer=optimizer,
+        device=device,
+        num_epochs=config.num_epochs,
+        use_adaptive_loss=config.use_adaptive_loss,
+        use_jupyter=config.training_uses_jupyter_notebook,
+        base_image_size=config.original_dataset['image_resolution'],
+        cropped_resolution=config.augmented_dataset['cropped_resolution'],
+
+        plot_window_size=config.plotter['window_size'],
+        plot_update_frequency=config.plotter['plot_update_frequency'],
+        plot_scroll_size=config.plotter['window_buffer_size'],
+        
+        selected_scheduler=scheduler,
+
+        non_adaptive_reward_weight=config.non_adaptive_reward_weight
+    )
+
+    print("\nEvaluating on validation set...")
+    evaluate_hybrid_model(model, val_dataloader, device)
+
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, config.output_filename)
+
+    print(f"Final model saved as '{config.output_filename}'.")
+
+def train_hybrid_model_with_config(model, 
+                                   train_dataloader, 
+                                   val_dataloader, 
+                                   optimizer, 
+                                   device, 
+                                   num_epochs=10, 
+                                   use_adaptive_loss=True, 
+                                   use_jupyter=True,
+                                   
+                                   base_image_size=256,
+                                   cropped_resolution=86,
+                                   plot_window_size=400,
+                                   plot_update_frequency=5,
+                                   plot_scroll_size=400, 
+
+                                   selected_scheduler=None,
+
+                                   non_adaptive_reward_weight=0.1,
+
+                                   output_filename='best_hybrid_model.pth'
+                                   ):
+    """
+    Enhanced training function with improved real-time plotting
+    
+    Args:
+        plot_update_frequency: Update plot every N batches (lower = more frequent updates but slower)
+    """
+    
+    # Initialize enhanced plotter
+    plotter = RealTimeHybridPlotter(
+        use_jupyter=use_jupyter, 
+        window_size=plot_window_size,    # Larger window for better visualization
+        update_frequency=plot_update_frequency,
+        scroll_size=plot_scroll_size     # Define the scroll window size here
+    )
+    
+    # Setup loss function and optimizer
+    if use_adaptive_loss:
+        try:
+            criterion = AdaptiveLoss().to(device)
+            # Deprecated with config
+            # optimizer = optim.Adam(list(model.parameters()) + list(criterion.parameters()), 
+            #                       lr=1e-4, weight_decay=1e-4)
+        except NameError:
+            print("AdaptiveLoss not found, using standard loss functions")
+            use_adaptive_loss = False
+            classification_criterion = nn.CrossEntropyLoss()
+            reward_criterion = nn.MSELoss()
+    else:
+        classification_criterion = nn.CrossEntropyLoss()
+        reward_criterion = nn.MSELoss()
+    
+    # Cosine Annealing, gradient change may be better for this case
+    if selected_scheduler is not None:
+        scheduler = selected_scheduler
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=10, eta_min=1e-6
+        )
+    
+    best_val_loss = float('inf')
+    best_val_accuracy = 0.0
+    train_losses = []
+    val_losses = []
+    val_accuracies = []
+    
+    print(f"  Starting hybrid model training for {num_epochs} epochs...")
+    print(f"  Plot updates every {plot_update_frequency} batches")
+    print("=" * 80)
+    
+    try:
+        for epoch in range(num_epochs):
+            start_time = time.time()
+            
+            # Training phase
+            model.train()
+            running_loss = 0.0
+            running_class_loss = 0.0
+            running_reward_loss = 0.0
+            batch_count = 0
+            
+            for i, batch_data in enumerate(train_dataloader):
+                if len(batch_data) != 4:  # Need all components
+                    continue
+                    
+                inputs, labels, rewards, scan_indices = batch_data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                rewards = rewards.to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                class_outputs, reward_outputs = model(inputs)
+                
+                if use_adaptive_loss:
+                    total_loss, class_loss, reward_loss = criterion(
+                        class_outputs, labels, reward_outputs, rewards)
+                else:
+                    class_loss = classification_criterion(class_outputs, labels)
+                    reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
+                    batch_loss = class_loss + non_adaptive_reward_weight * reward_loss
+                
+                # Backward pass
+                total_loss.backward()
+                
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                # Update running statistics
+                running_loss += total_loss.item()
+                running_class_loss += class_loss.item()
+                running_reward_loss += reward_loss.item()
+                batch_count += 1
+                
+                # Update real-time plots
+                plotter.update_batch_metrics(
+                    total_loss.item(), 
+                    class_loss.item(), 
+                    reward_loss.item()
+                )
+                
+                # Print progress periodically
+                if (i + 1) % 100 == 0:
+                    avg_loss = running_loss / batch_count
+                    avg_class = running_class_loss / batch_count
+                    avg_reward = running_reward_loss / batch_count
+                    
+                    print(f"  Epoch [{epoch+1}/{num_epochs}] Batch [{i+1}/{len(train_dataloader)}] - "
+                          f"Loss: {total_loss.item():.4f} | Avg: {avg_loss:.4f} "
+                          f"(Class: {avg_class:.4f}, Reward: {avg_reward:.4f})")
+            
+            # Force plot update at end of epoch
+            plotter.update_batch_metrics(
+                total_loss.item(), class_loss.item(), reward_loss.item(), force_update=True
+            )
+            
+            # Validation phase
+            print(f"  Running validation...")
+
+            # Define the transform as an augmented transform
+            aug_transform = AugmentedTransform(base_size=base_image_size, crop_size=cropped_resolution, normalize=True)
+
+            # val_loss, val_accuracy = validate_with_augmented_transform(
+            #     model, val_dataloader, device, aug_transform,
+            #     use_adaptive_loss, criterion if use_adaptive_loss else None,
+            #     max_augmentations=20
+            # )
+            val_loss, val_accuracy = validate_model_with_accuracy(
+                model, val_dataloader, device, use_adaptive_loss, 
+                criterion if use_adaptive_loss else None
+            )
+            
+            # Learning rate scheduling
+            scheduler.step(val_loss)
+            
+            # Calculate epoch statistics
+            avg_train_loss = running_loss / len(train_dataloader)
+            avg_class_loss = running_class_loss / len(train_dataloader)
+            avg_reward_loss = running_reward_loss / len(train_dataloader)
+            
+            train_losses.append(avg_train_loss)
+            val_losses.append(val_loss)
+            val_accuracies.append(val_accuracy)
+            
+            # Update epoch-level plots
+            plotter.update_epoch_metrics(epoch + 1, val_loss, val_accuracy)
+            
+            # Print epoch summary
+            epoch_time = time.time() - start_time
+            print(f"\n  Epoch {epoch+1}/{num_epochs} Summary ({epoch_time:.1f}s):")
+            print(f"  Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            print(f"  Class Loss: {avg_class_loss:.6f} | Reward Loss: {avg_reward_loss:.6f}")
+            print(f"  Validation Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.2f}%)")
+            
+            if use_adaptive_loss:
+                print(f"  Adaptive weights - Class: {torch.exp(-criterion.log_var_class).item():.4f}, "
+                      f"Reward: {torch.exp(-criterion.log_var_reward).item():.4f}")
+            
+            # Save best model
+            if val_accuracy > best_val_accuracy:
+                best_val_loss = val_loss
+                best_val_accuracy = val_accuracy
+                
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                    'val_accuracy': val_accuracy,
+                    'train_losses': train_losses,
+                    'val_losses': val_losses,
+                    'val_accuracies': val_accuracies,
+                }, f'{output_filename}_{epoch+1}.pth')
+                
+                print(f"NEW BEST MODEL SAVED! (Val Loss: {val_loss:.6f}, Val Acc: {val_accuracy:.4f})")
+                
+                # Save plot of best model
+                # plotter.save_plot(f'best_model_epoch_{epoch+1}.png')
+            
+            print("=" * 80)
+    
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+        # print("Saving current progress...")
+        # plotter.save_plot('interrupted_training.png')
+    except Exception as e:
+        print(f"Error during training: {e}")
+        # plotter.save_plot('error_training.png')
+        raise
+    finally:
+        if not use_jupyter:
+            print("Training completed. Plot window will remain open...")
+            print("Close the plot window manually when done reviewing.")
+    
+    print(f"\nTraining completed.")
+    print(f"Best validation loss: {best_val_loss:.6f}")
+    print(f"Best validation accuracy: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
+    # print(f"Final plot saved as 'final_training_progress.png'")
+    
+    return train_losses, val_losses, val_accuracies, plotter
+
+# if __name__ == "__main__":
+#     hybrid_model_from_config(config_path="config.yaml")

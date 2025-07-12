@@ -1,0 +1,121 @@
+training:
+  # Original Dataset Controls -----------------------------------------------------------
+  # Configure the training dataset base folder and sub folders.
+
+  original_dataset:
+    # Define the base folder where the .ibw files are stored. This may contain many sub-
+    # folders.
+    base_folder: 'exp_data2/'
+
+    # Dataset folders will be treated as separate sets, thus they will be indexed as
+    # individual sets. Organize files as needed.
+    dataset_folders:
+      - read_out
+      - wear_out
+
+    # Number of points in each image's axis (i.e. 256x256)
+    image_resolution: 256     
+
+  # Augmented Dataset Controls ----------------------------------------------------------
+  # This dict contains the configurable elements of the augmented dataset from the
+  # given input images.
+  #
+  # Note that tests have not been done for augmentation factors other than 72, which may 
+  # introduce instability during training or unexpected crashes.
+  # 
+  # The cropped resolution defines the equally-spaced crop size as a square. If this
+  # resolution goes beyond the bounds of the image, undefined behavior may occur.
+
+  # The reward_weights dict contains the configurable weights for precalculation of the
+  # reward values. It is recommended to use the tools in other notebooks to find weights
+  # that work best for the given dataset (i.e. smooth gradient of rewards from first index
+  # to last).
+
+  augmented_dataset:
+    compute_rewards:  true
+    use_data_augmentation:  true
+    augmentation_factor:  72
+
+    # Define the cropped resolution of images after augmentation
+    # For 256x256 images, 86x86 is 1/3rd of the image without overlap
+    cropped_resolution: 86
+
+    # Configure reward weights here (not used if compute_rewards is False)
+    # If any weight is to be left out, set its reward to zero or disable compute_rewards
+    reward_weights:
+      # MAE between channel traces
+      phase_consistency: 10.0
+      amplitude_consistency: 0.25
+      height_consistency: 10.0
+
+      # Calculated by scan index number
+      tip_freshness: 0.00
+
+      # One-channel statistics (trace only)
+      amplitude_std: 5.0
+      height_entropy: 1.0
+      phase_std: 2.0
+      height_skew: 2.5
+      phase_skew: 0.75
+  
+  # Configure training optimizers: the Adam optimizer is the only one in use
+  # More may be added according to the structure below.
+
+  optimizers:
+    active: adam
+    available:
+      - type: adam                  # Adam optimizer
+        params:
+          lr: 0.0001                # Learning rate 1e-4
+          weight_decay: 0.0001      # Decay 1e-4
+
+  # Configure the learning schedulers. These control the model's focus during training.
+  learning_schedulers:
+    active: CosineAnnealingLR
+    available:
+      - type: ReduceLROnPlateau
+        params:
+          mode: 'min'
+          factor: 0.5
+          patience: 3
+      - type: CosineAnnealingLR
+        params:
+          T_max: 10
+          eta_min: 1e-6
+
+  # Torch device for hardware acceleration, *shouldn't* cause architecture issues between
+  # mps/cuda/cpu
+  # Handled automatically, but can be strictly configured here
+  device: mps
+
+  # Defines the % of data used for training
+  train_split_weight: 0.8   
+  num_epochs: 10
+  training_batch_size: 16
+  training_uses_jupyter_notebook: false
+
+  # If wanted, the number of classes can be changed from 5
+  num_classes: 5
+
+  # If using both classifier and reward head, this allows the training to define
+  # the collective ratio of weights for reward and classifier loss during training.
+  # Else, it uses a pre-defined reward weight (below).
+  use_adaptive_loss:  true
+  non_adaptive_reward_weight: 0.1
+  
+  # Live plotter configuration
+  plotter:
+    # Defines window size to be used during plotting (px)
+    window_size:  400
+
+    # Defines how many training batches per display update
+    plot_update_frequency:  5
+
+    # Defines the number of batches to be shown with the window while scrolling
+    # Note that large buffers may cause memory issues.
+    window_buffer_size: 400
+
+  # Output filename
+  output_filename:  'hybrid_model.pth'
+
+
