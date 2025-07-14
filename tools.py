@@ -1946,7 +1946,7 @@ def train_hybrid_model_with_plotting(model, train_dataloader, val_dataloader, op
                 else:
                     reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
                     class_loss = torch.tensor(0.0, device=device)  # Dummy value for logging
-                    total_loss = reward_loss  # No classification loss
+                    total_loss = class_loss + 0.1 * reward_loss
                 
                 # Backward pass
                 total_loss.backward()
@@ -5109,7 +5109,7 @@ def train_hybrid_model_with_config(model,
                 else:
                     class_loss = classification_criterion(class_outputs, labels)
                     reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
-                    batch_loss = class_loss + non_adaptive_reward_weight * reward_loss
+                    total_loss = class_loss + non_adaptive_reward_weight * reward_loss
                 
                 # Backward pass
                 total_loss.backward()

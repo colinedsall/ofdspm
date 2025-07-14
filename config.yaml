@@ -1,5 +1,5 @@
 training:
-  # Original Dataset Controls -----------------------------------------------------------
+  # Original Dataset Controls 
   # Configure the training dataset base folder and sub folders.
 
   original_dataset:
@@ -16,7 +16,7 @@ training:
     # Number of points in each image's axis (i.e. 256x256)
     image_resolution: 256     
 
-  # Augmented Dataset Controls ----------------------------------------------------------
+  # Augmented Dataset Controls 
   # This dict contains the configurable elements of the augmented dataset from the
   # given input images.
   #
@@ -94,7 +94,8 @@ training:
   training_batch_size: 16
 
   # Set this flag to False if training is ran via script, else True
-  training_uses_jupyter_notebook: false
+  # If set incorrectly, the plots will not update, but training will continue as usual
+  training_uses_jupyter_notebook: true
 
   # If wanted, the number of classes can be changed from 5
   num_classes: 5
@@ -102,7 +103,7 @@ training:
   # If using both classifier and reward head, this allows the training to define
   # the collective ratio of weights for reward and classifier loss during training.
   # Else, it uses a pre-defined reward weight (below).
-  use_adaptive_loss:  true
+  use_adaptive_loss:  false
   non_adaptive_reward_weight: 1.0
   
   # Live plotter configuration
