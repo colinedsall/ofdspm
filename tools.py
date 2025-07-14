@@ -4893,8 +4893,13 @@ def build_scheduler(config, optimizer):
     
     if sched_type.lower() == 'reducelronplateau':
         return optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
+
     elif sched_type.lower() == 'cosineannealinglr':
+        # Ensure correct typing
+        params['T_max'] = int(params.get('T_max', 10))
+        params['eta_min'] = float(params.get('eta_min', 0.0))
         return optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
+
     else:
         raise ValueError(f"Unsupported scheduler type: {sched_type}")
     
@@ -4995,7 +5000,9 @@ def hybrid_model_from_config(config_path="config.yaml"):
         
         selected_scheduler=scheduler,
 
-        non_adaptive_reward_weight=config.non_adaptive_reward_weight
+        non_adaptive_reward_weight=config.non_adaptive_reward_weight,
+
+        output_filename=config.output_filename
     )
 
     print("\nEvaluating on validation set...")

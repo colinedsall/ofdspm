@@ -119,6 +119,6 @@ training:
     window_buffer_size: 400
 
   # Output filename
-  output_filename:  'hybrid_trained_model.pth'
+  output_filename:  'hybrid_trained_model'
 
 
