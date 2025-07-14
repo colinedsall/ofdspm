@@ -4995,6 +4995,8 @@ def hybrid_model_from_config(config_path="config.yaml"):
         non_adaptive_reward_weight=config.non_adaptive_reward_weight
     )
 
+
+
     print("\nEvaluating on validation set...")
     evaluate_hybrid_model(model, val_dataloader, device)
 
@@ -5229,5 +5231,4 @@ def train_hybrid_model_with_config(model,
     
     return train_losses, val_losses, val_accuracies, plotter
 
-# if __name__ == "__main__":
-#     hybrid_model_from_config(config_path="config.yaml")
+
