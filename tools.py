@@ -26,7 +26,7 @@ Description:        This python file contains scripts needed for training  eithe
                     (Version 4) Changes made to make the entire training pipeline for the hybrid model
                     configurable. This involves changing the learning scheduler, optimizer, and other
                     configurable training elements into a class so that the user can easily modify and
-                    compare values used during training instead of hard-defined constants.
+                    compare values used during training instead of hard-defined constants. See `config.yaml`.
 """
 
 # Torch, for accessing models
@@ -4195,7 +4195,8 @@ def bt_plot_confidence_vs_predicted_class(results, title="Confidence vs Predicte
     plt.show()
 
 """
-PCA Analysis for comparsion of the two mode.
+PCA Analysis for comparsion of the two models. This may need to be changed to solely
+focus on a single model, as for now it outputs images of both.
 """
 
 class PCAAnalyzer:
@@ -4819,7 +4820,9 @@ class CombinedBT_HB_Classifier:
         print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
 """
-Config and building.
+Training a hybrid model using a config file. This can also be modified and created
+as needed, but dictionary key/value pairs may cause errors if the file is created from
+scratch. Use the template in the repository to configure all available options.
 """
 
 class TrainingConfig:
@@ -4994,8 +4997,6 @@ def hybrid_model_from_config(config_path="config.yaml"):
 
         non_adaptive_reward_weight=config.non_adaptive_reward_weight
     )
-
-
 
     print("\nEvaluating on validation set...")
     evaluate_hybrid_model(model, val_dataloader, device)
@@ -5230,5 +5231,3 @@ def train_hybrid_model_with_config(model,
     # print(f"Final plot saved as 'final_training_progress.png'")
     
     return train_losses, val_losses, val_accuracies, plotter
-
-
