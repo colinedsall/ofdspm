@@ -71,7 +71,7 @@ training:
 
   # Configure the learning schedulers. These control the model's focus during training.
   learning_schedulers:
-    active: CosineAnnealingLR
+    active: ReduceLROnPlateau
     available:
       - type: ReduceLROnPlateau
         params:
@@ -89,7 +89,7 @@ training:
   device: mps
 
   # Defines the % of data used for training
-  train_split_weight: 0.8   
+  train_split_weight: 0.6   
   num_epochs: 10
   training_batch_size: 16
 
@@ -103,7 +103,7 @@ training:
   # If using both classifier and reward head, this allows the training to define
   # the collective ratio of weights for reward and classifier loss during training.
   # Else, it uses a pre-defined reward weight (below).
-  use_adaptive_loss:  false
+  use_adaptive_loss:  true
   non_adaptive_reward_weight: 1.0
   
   # Live plotter configuration
@@ -116,9 +116,9 @@ training:
 
     # Defines the number of batches to be shown with the window while scrolling
     # Note that large buffers may cause memory issues.
-    window_buffer_size: 400
+    window_buffer_size: 1200
 
-  # Output filename
-  output_filename:  'hybrid_trained_model'
+  # Output filename, (file extension .pth is added automatically)
+  output_filename:  'hybrid_trained_model_jul14'
 
 

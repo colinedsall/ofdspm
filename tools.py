@@ -874,6 +874,18 @@ class AugmentedIBWDataset(Dataset):
         result.append(scan_index)
         return tuple(result)
 
+    def _simple_preprocess(self, height_img):
+        """Simple preprocessing of height image into a tensor"""
+        pil_img = self._height_to_pil(height_img)
+        
+        preprocess = transforms.Compose([
+            transforms.Resize((224, 224)),  # or your target resolution
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # normalize to [-1,1]
+        ])
+        
+        return preprocess(pil_img)
+
     def _height_to_pil(self, height_np_array):
         """Convert height numpy array to PIL Image"""
         # Normalize to 0-255
@@ -1582,7 +1594,7 @@ def evaluate_hybrid_model(model, dataloader, device):
     return accuracy
 
 class RealTimeHybridPlotter:
-    """Enhanced real-time plotter for hybrid model training metrics"""
+    """Enhanced real-time plotter for hybrid model training metrics with validation plotting"""
     
     def __init__(self, use_jupyter=True, window_size=100, update_frequency=1, scroll_size=1000):
         self.use_jupyter = use_jupyter
@@ -1591,10 +1603,6 @@ class RealTimeHybridPlotter:
         self.update_counter = 0
         
         # Storage for metrics
-        # self.batch_numbers = []
-        # self.total_losses = []
-        # self.class_losses = []
-        # self.reward_losses = []
         self.batch_numbers = deque(maxlen=scroll_size)
         self.total_losses = deque(maxlen=scroll_size)
         self.class_losses = deque(maxlen=scroll_size)
@@ -1602,6 +1610,13 @@ class RealTimeHybridPlotter:
         self.val_losses = []
         self.val_accuracies = []
         self.epoch_numbers = []
+        
+        # NEW: Storage for validation batch metrics
+        self.val_batch_numbers = deque(maxlen=scroll_size)
+        self.val_batch_losses = deque(maxlen=scroll_size)
+        self.val_batch_accuracies = deque(maxlen=scroll_size)
+        self.current_val_epoch = 0
+        self.val_batch_counter = 0
         
         # Storage for running averages (smoother plotting)
         self.running_total_loss = deque(maxlen=10)
@@ -1617,15 +1632,18 @@ class RealTimeHybridPlotter:
             plt.ion()
         
         # Create figure with better settings for real-time updates
-        self.fig = plt.figure(figsize=(16, 12))
+        # MODIFIED: Changed to 4x2 grid to accommodate validation batch plot
+        self.fig = plt.figure(figsize=(18, 16))
         self.fig.suptitle('Hybrid Model Training Progress (Real-Time)', fontsize=16, fontweight='bold')
         
         # Create subplots with better spacing
-        gs = self.fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
+        gs = self.fig.add_gridspec(4, 2, hspace=0.35, wspace=0.3)
         self.ax1 = self.fig.add_subplot(gs[0, :])  # Full width for batch losses
         self.ax2 = self.fig.add_subplot(gs[1, 0])  # Validation loss
         self.ax3 = self.fig.add_subplot(gs[1, 1])  # Validation accuracy
         self.ax4 = self.fig.add_subplot(gs[2, :])  # Combined metrics
+
+        self.ax5 = self.fig.add_subplot(gs[3, :])  # Validation batch metrics
         
         # Initialize batch loss plot (main real-time plot)
         self.line_total, = self.ax1.plot([], [], 'b-', label='Total Loss', linewidth=2, alpha=0.8)
@@ -1677,10 +1695,37 @@ class RealTimeHybridPlotter:
         lines2, labels2 = self.ax4_twin.get_legend_handles_labels()
         self.ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
+
+        self.ax5_twin = self.ax5.twinx()
+        self.line_val_batch_loss, = self.ax5.plot([], [], 'darkred', linewidth=2, alpha=0.8, label='Val Batch Loss')
+        self.line_val_batch_acc, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=2, alpha=0.8, label='Val Batch Accuracy')
+        
+        # Add smoothed validation lines
+        self.line_val_batch_loss_smooth, = self.ax5.plot([], [], 'darkred', linewidth=1, alpha=0.5, linestyle='--', label='Val Loss (Smoothed)')
+        self.line_val_batch_acc_smooth, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=1, alpha=0.5, linestyle='--', label='Val Acc (Smoothed)')
+        
+        self.ax5.set_title('Validation Progress - Real-Time (Per Batch)', fontweight='bold')
+        self.ax5.set_xlabel('Validation Batch Number')
+        self.ax5.set_ylabel('Validation Loss', color='darkred', fontweight='bold')
+        self.ax5_twin.set_ylabel('Validation Accuracy (%)', color='darkgreen', fontweight='bold')
+        self.ax5.tick_params(axis='y', labelcolor='darkred')
+        self.ax5_twin.tick_params(axis='y', labelcolor='darkgreen')
+        self.ax5.grid(True, alpha=0.3)
+        
+        # Add validation batch legend
+        lines5, labels5 = self.ax5.get_legend_handles_labels()
+        lines5_twin, labels5_twin = self.ax5_twin.get_legend_handles_labels()
+        self.ax5.legend(lines5 + lines5_twin, labels5 + labels5_twin, loc='upper left')
+        
         # Add text box for current statistics
         self.stats_text = self.ax1.text(0.02, 0.98, '', transform=self.ax1.transAxes, 
                                        fontsize=10, verticalalignment='top',
                                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+
+        self.val_stats_text = self.ax5.text(0.02, 0.98, '', transform=self.ax5.transAxes, 
+                                           fontsize=10, verticalalignment='top',
+                                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
         
         # Show initial plot
         if use_jupyter:
@@ -1728,6 +1773,74 @@ class RealTimeHybridPlotter:
         if self.update_counter >= self.update_frequency or force_update:
             self.update_counter = 0
             self._update_batch_plot()
+    
+    def start_validation_epoch(self, epoch):
+        """Call this when starting validation for a new epoch"""
+        self.current_val_epoch = epoch
+        self.val_batch_counter = 0
+        print(f"Starting validation tracking for epoch {epoch}")
+    
+    def update_validation_batch(self, val_loss, val_accuracy, force_update=False):
+        """Update validation metrics for each batch during validation"""
+        self.val_batch_counter += 1
+        
+        # Store validation batch metrics
+        self.val_batch_numbers.append(self.val_batch_counter)
+        self.val_batch_losses.append(val_loss)
+        self.val_batch_accuracies.append(val_accuracy * 100)  # Convert to percentage
+        
+        # Update plot every few batches or if forced
+        if self.val_batch_counter % 5 == 0 or force_update:
+            self._update_validation_batch_plot()
+    
+    def _update_validation_batch_plot(self):
+        """Internal method to update the validation batch plot"""
+        if len(self.val_batch_numbers) == 0:
+            return
+            
+        batch_nums = list(self.val_batch_numbers)
+        batch_losses = list(self.val_batch_losses)
+        batch_accuracies = list(self.val_batch_accuracies)
+        
+        # Update main lines
+        self.line_val_batch_loss.set_data(batch_nums, batch_losses)
+        self.line_val_batch_acc.set_data(batch_nums, batch_accuracies)
+        
+        # Update smoothed lines
+        if len(batch_nums) > 5:
+            smooth_losses = self._calculate_smooth_values(batch_losses)
+            smooth_accuracies = self._calculate_smooth_values(batch_accuracies)
+            
+            self.line_val_batch_loss_smooth.set_data(batch_nums, smooth_losses)
+            self.line_val_batch_acc_smooth.set_data(batch_nums, smooth_accuracies)
+        
+        # Adjust axes dynamically
+        if len(batch_nums) > 1:
+            self.ax5.set_xlim(max(1, min(batch_nums)), max(batch_nums))
+            self.ax5_twin.set_xlim(max(1, min(batch_nums)), max(batch_nums))
+            
+            # Set y-axis limits
+            if batch_losses:
+                loss_min, loss_max = min(batch_losses), max(batch_losses)
+                loss_range = loss_max - loss_min
+                self.ax5.set_ylim(loss_min - 0.1 * loss_range, loss_max + 0.1 * loss_range)
+            
+            if batch_accuracies:
+                acc_min, acc_max = min(batch_accuracies), max(batch_accuracies)
+                acc_range = acc_max - acc_min
+                self.ax5_twin.set_ylim(max(0, acc_min - 0.1 * acc_range), min(100, acc_max + 0.1 * acc_range))
+        
+        # Update validation statistics text
+        if len(batch_losses) > 0:
+            current_val_stats = (
+                f'Epoch {self.current_val_epoch} - Val Batch: {self.val_batch_counter}\n'
+                f'Current - Loss: {batch_losses[-1]:.4f}, Acc: {batch_accuracies[-1]:.2f}%\n'
+                f'Avg - Loss: {np.mean(batch_losses):.4f}, Acc: {np.mean(batch_accuracies):.2f}%'
+            )
+            self.val_stats_text.set_text(current_val_stats)
+        
+        # Force update
+        self._force_plot_update()
     
     def _update_batch_plot(self):
         """Internal method to update the batch loss plot"""
@@ -1822,15 +1935,19 @@ class RealTimeHybridPlotter:
         self._force_plot_update()
         print(f"  Epoch {epoch} - Validation Loss: {val_loss:.4f}, Accuracy: {val_accuracy_pct:.2f}%")
 
-def validate_model_with_accuracy(model, val_dataloader, device, use_adaptive_loss=False, criterion=None):
-    """Enhanced validation function that returns both loss and accuracy"""
+def validate_model_with_accuracy(model, val_dataloader, device, use_adaptive_loss=False, criterion=None, val_plotter=None, epoch=None):
+    """Enhanced validation function that returns both loss and accuracy with real-time plotting"""
     model.eval()
     total_loss = 0.0
     all_predictions = []
     all_labels = []
     
+    # Initialize validation plotting if plotter is provided
+    if val_plotter is not None and epoch is not None:
+        val_plotter.start_validation_epoch(epoch)
+
     with torch.no_grad():
-        for batch_data in val_dataloader:
+        for batch_idx, batch_data in enumerate(val_dataloader):
             if len(batch_data) != 4:
                 continue
                 
@@ -1855,6 +1972,19 @@ def validate_model_with_accuracy(model, val_dataloader, device, use_adaptive_los
             _, predicted = torch.max(class_outputs.data, 1)
             all_predictions.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            
+            # Calculate batch accuracy for real-time plotting
+            if val_plotter is not None:
+                batch_correct = (predicted == labels).sum().item()
+                batch_accuracy = batch_correct / len(labels)
+                
+                # Update validation plot every few batches
+                if (batch_idx + 1) % 5 == 0 or (batch_idx + 1) == len(val_dataloader):
+                    val_plotter.update_validation_batch(
+                        loss.item(), 
+                        batch_accuracy, 
+                        force_update=(batch_idx + 1) == len(val_dataloader)
+                    )
     
     avg_loss = total_loss / len(val_dataloader)
     accuracy = accuracy_score(all_labels, all_predictions)
@@ -4938,33 +5068,72 @@ def hybrid_model_from_config(config_path="config.yaml"):
     device = build_device(config)
     print(f"Using device: {device}")
 
-    # Load dataset
     base_folder = config.original_dataset['base_folder']
     dataset_folders = config.original_dataset['dataset_folders']
+
+    # Load original data
     all_files, all_labels, all_scan_indices, dataset_info = load_multi_dataset([base_folder], dataset_folders)
 
     print(f"\nDataset Summary:")
     print(f"Total files: {len(all_files)}")
     print(f"Label distribution: {np.bincount(all_labels)}")
 
-    print("\nCreating augmented dataset...")
-    dataset = AugmentedIBWDataset(
-        all_files,
-        all_labels,
-        all_scan_indices,
+    # Step 1: Create train/val split indices BEFORE augmentation
+    from sklearn.model_selection import train_test_split
+
+    train_indices, val_indices = train_test_split(
+        np.arange(len(all_files)),
+        train_size=config.train_split_weight,
+        stratify=all_labels,  # Optional: preserves class balance
+        random_state=42       # For reproducibility
+    )
+
+    # Step 2: Partition files/labels/indices based on split
+    train_files = [all_files[i] for i in train_indices]
+    train_labels = [all_labels[i] for i in train_indices]
+    train_scan_indices = [all_scan_indices[i] for i in train_indices]
+
+    val_files = [all_files[i] for i in val_indices]
+    val_labels = [all_labels[i] for i in val_indices]
+    val_scan_indices = [all_scan_indices[i] for i in val_indices]
+
+    # Step 3: Apply augmentation to each split separately
+    print("\nCreating augmented train dataset...")
+    train_dataset = AugmentedIBWDataset(
+        train_files,
+        train_labels,
+        train_scan_indices,
         compute_rewards=config.augmented_dataset['compute_rewards'],
         use_augmentation=config.augmented_dataset['use_data_augmentation'],
         augmentation_factor=config.augmented_dataset['augmentation_factor'],
         reward_weights=config.augmented_dataset['reward_weights']
     )
 
-    print(f"Augmented dataset size: {len(dataset)} samples")
-    print(f"Augmentation ratio: {len(dataset) / len(all_files):.1f}x")
+    # Previous Issue: Training used 72x augmentation while validation used 1x 
+    # (no augmentation), creating an artificial domain gap that didn't reflect 
+    # real-world inference conditions.
+    #
+    # Current Solution: Both training and validation now use 72x augmentation
+    # to match the inference pipeline, where predictions are averaged across
+    # multiple augmented views of the same image.
+    print("Creating validation dataset...")
+    val_dataset = AugmentedIBWDataset(
+        val_files,
+        val_labels,
+        val_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
 
-    # Train/val split
-    train_size = int(config.train_split_weight * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    print(f"Train set size: {len(train_dataset)}")
+    print(f"Validation set size: {len(val_dataset)}")
+    print("Train labels distribution:", np.bincount(train_labels))
+    print("Val labels distribution:", np.bincount(val_labels))
+
+    # np.save('train_indices.npy', train_indices)
+    # np.save('val_indices.npy', val_indices)
 
     # Dataloaders
     batch_size = config.training_batch_size
@@ -5049,6 +5218,13 @@ def train_hybrid_model_with_config(model,
         window_size=plot_window_size,    # Larger window for better visualization
         update_frequency=plot_update_frequency,
         scroll_size=plot_scroll_size     # Define the scroll window size here
+    )
+
+    val_plotter = RealTimeHybridPlotter(
+        use_jupyter=use_jupyter, 
+        window_size=plot_window_size,    
+        update_frequency=plot_update_frequency,
+        scroll_size=plot_scroll_size     
     )
     
     # Setup loss function and optimizer
@@ -5160,16 +5336,14 @@ def train_hybrid_model_with_config(model,
             # Define the transform as an augmented transform
             aug_transform = AugmentedTransform(base_size=base_image_size, crop_size=cropped_resolution, normalize=True)
 
-            # val_loss, val_accuracy = validate_with_augmented_transform(
-            #     model, val_dataloader, device, aug_transform,
-            #     use_adaptive_loss, criterion if use_adaptive_loss else None,
-            #     max_augmentations=20
-            # )
+            # UPDATED: Pass the epoch number to enable validation plotting
             val_loss, val_accuracy = validate_model_with_accuracy(
                 model, val_dataloader, device, use_adaptive_loss, 
-                criterion if use_adaptive_loss else None
+                criterion if use_adaptive_loss else None, 
+                val_plotter,  # Pass the plotter
+                epoch=(epoch + 1)  # Pass the current epoch number
             )
-            
+                        
             # Learning rate scheduling
             scheduler.step(val_loss)
             
@@ -5238,3 +5412,4 @@ def train_hybrid_model_with_config(model,
     # print(f"Final plot saved as 'final_training_progress.png'")
     
     return train_losses, val_losses, val_accuracies, plotter
+
