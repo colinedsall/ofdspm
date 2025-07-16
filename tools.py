@@ -5502,6 +5502,414 @@ def train_hybrid_model_with_config(model,
     
     return train_losses, val_losses, val_accuracies, plotter
 
+def hybrid_model_from_config_no_classifier(config_path="config.yaml"):
+    # Load config
+    config = TrainingConfig.from_yaml(config_path)
+    print("CONFIG KEYS:", config.__dict__.keys())
+
+    # Phase 1: Build device and training settings
+    device = build_device(config)
+    print(f"Using device: {device}")
+    print(f"NUMBER OF CLASSES: {config.num_classes}")
+
+
+    base_folder = config.original_dataset['base_folder']
+    dataset_folders = config.original_dataset['dataset_folders']
+
+    # Load data with reward-based labels
+    all_files, all_labels, all_rewards, dataset_info = load_multi_dataset_with_rewards_separate_stratification(
+        [base_folder],  # Note: wrapped in list to match expected format
+        dataset_folders, 
+        reward_weights=config.augmented_dataset['reward_weights'],
+        labeling_method='stratified',
+        num_classes=config.num_classes
+    )
+
+    print(f"\nDataset Summary:")
+    print(f"Total files: {len(all_files)}")
+    print(f"Label distribution: {np.bincount(all_labels)}")
+    
+    # Analyze label distribution
+    from collections import Counter
+    label_counts = Counter(all_labels)
+    print("Detailed label distribution:")
+    for label in sorted(label_counts.keys()):
+        print(f"  Class {label}: {label_counts[label]} samples")
+
+    # Step 1: Create train/val split indices BEFORE augmentation
+    from sklearn.model_selection import train_test_split
+
+    train_indices, val_indices = train_test_split(
+        np.arange(len(all_files)),
+        train_size=config.train_split_weight,
+        stratify=all_labels,  # This ensures balanced class distribution in both splits
+        random_state=42       # For reproducibility
+    )
+
+    # Step 2: Partition files/labels/rewards based on split
+    train_files = [all_files[i] for i in train_indices]
+    train_labels = [all_labels[i] for i in train_indices]
+    train_rewards = [all_rewards[i] for i in train_indices]
+
+    val_files = [all_files[i] for i in val_indices]
+    val_labels = [all_labels[i] for i in val_indices]
+    val_rewards = [all_rewards[i] for i in val_indices]
+
+    # Generate scan indices for backward compatibility with augmentation
+    # (if your augmentation code still expects scan indices)
+    train_scan_indices = list(range(len(train_files)))
+    val_scan_indices = list(range(len(val_files)))
+
+    print(f"\nTrain/Val Split Summary:")
+    print(f"Train set: {len(train_files)} files")
+    print(f"Val set: {len(val_files)} files")
+    print("Train labels distribution:", np.bincount(train_labels))
+    print("Val labels distribution:", np.bincount(val_labels))
+    
+    # Verify stratification worked
+    train_props = np.bincount(train_labels) / len(train_labels)
+    val_props = np.bincount(val_labels) / len(val_labels)
+    print("Train class proportions:", train_props)
+    print("Val class proportions:", val_props)
+
+    # Step 3: Apply augmentation to each split separately
+    print("\nCreating augmented train dataset...")
+    train_dataset = AugmentedIBWDataset(
+        train_files,
+        train_labels,
+        train_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
+
+    print("Creating validation dataset...")
+    val_dataset = AugmentedIBWDataset(
+        val_files,
+        val_labels,
+        val_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
+
+    print(f"Train set size after augmentation: {len(train_dataset)}")
+    print(f"Validation set size after augmentation: {len(val_dataset)}")
+
+    # Dataloaders
+    batch_size = config.training_batch_size
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
+
+    print(f"Training batches: {len(train_dataloader)}")
+    print(f"Validation batches: {len(val_dataloader)}")
+
+    # Phase 2: Build model, optimizer, and scheduler
+    model = RewardAwareModel(num_classes=config.num_classes, pretrained=True).to(device)
+    optimizer = build_optimizer(config, model.parameters())
+    scheduler = build_scheduler(config, optimizer)
+
+    print("\nReward Distribution and Corresponding Classes:")
+
+    analysis = analyze_label_distribution(all_labels, all_rewards)
+    print("\nLabel distribution analysis:")
+    for label, stats in analysis.items():
+        print(f"Class {label}: {stats['count']} samples, "
+              f"avg reward: {stats['reward_mean']:.3f} ± {stats['reward_std']:.3f}")
+
+    # Create labels dictionary for visualization
+    labels_dict = create_labels_dict_from_file_paths(all_files, all_labels)
+
+    # Load and visualize each dataset grid
+    for dataset_name in ['read_out', 'wear_out']:
+        print(f"\n=== {dataset_name.upper()} DATASET ===")
+        grid = get_ibw_grid(f'exp_data2/{dataset_name}', grid_size=10)
+        
+        # Display the class assignments
+        class_grid, reward_grid = compute_and_display_class_grid(grid, labels_dict)
+        
+        # Analyze spatial patterns
+        analysis = analyze_class_distribution_in_grid(class_grid)
+
+
+    print("\nStarting training...")
+
+    # Training function
+    train_losses, val_losses, val_accuracies, plotter = train_hybrid_model_with_config_no_classifier(
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        optimizer=optimizer,
+        device=device,
+        num_epochs=config.num_epochs,
+        use_adaptive_loss=config.use_adaptive_loss,
+        use_jupyter=config.training_uses_jupyter_notebook,
+        base_image_size=config.original_dataset['image_resolution'],
+        cropped_resolution=config.augmented_dataset['cropped_resolution'],
+
+        plot_window_size=config.plotter['window_size'],
+        plot_update_frequency=config.plotter['plot_update_frequency'],
+        plot_scroll_size=config.plotter['window_buffer_size'],
+        
+        selected_scheduler=scheduler,
+
+        non_adaptive_reward_weight=config.non_adaptive_reward_weight,
+
+        output_filename=config.output_filename
+    )
+
+    print("\nEvaluating on validation set...")
+    evaluate_hybrid_model(model, val_dataloader, device)
+
+    # Save model with additional metadata
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'config': config.__dict__,
+        'dataset_info': dataset_info,
+        'label_distribution': {
+            'train': np.bincount(train_labels).tolist(),
+            'val': np.bincount(val_labels).tolist()
+        }
+    }, config.output_filename)
+
+    print(f"Final model saved as '{config.output_filename}'.")
+    
+    return {
+        'model': model,
+        'train_dataset': train_dataset,
+        'val_dataset': val_dataset,
+        'dataset_info': dataset_info,
+        'train_labels': train_labels,
+        'val_labels': val_labels,
+        'train_rewards': train_rewards,
+        'val_rewards': val_rewards
+    }
+
+def train_hybrid_model_with_config_no_classifier(model, 
+                                   train_dataloader, 
+                                   val_dataloader, 
+                                   optimizer, 
+                                   device, 
+                                   num_epochs=10, 
+                                   use_adaptive_loss=True, 
+                                   use_jupyter=True,
+                                   
+                                   base_image_size=256,
+                                   cropped_resolution=86,
+                                   plot_window_size=400,
+                                   plot_update_frequency=5,
+                                   plot_scroll_size=400, 
+
+                                   selected_scheduler=None,
+
+                                   non_adaptive_reward_weight=0.1,
+
+                                   output_filename='best_hybrid_model.pth'
+                                   ):
+    """
+    Enhanced training function with improved real-time plotting
+    
+    Args:
+        plot_update_frequency: Update plot every N batches (lower = more frequent updates but slower)
+    """
+    
+    # Initialize enhanced plotter
+    plotter = RealTimeHybridPlotter(
+        use_jupyter=use_jupyter, 
+        window_size=plot_window_size,    # Larger window for better visualization
+        update_frequency=plot_update_frequency,
+        scroll_size=plot_scroll_size     # Define the scroll window size here
+    )
+    
+    # Setup loss function and optimizer
+    if use_adaptive_loss:
+        try:
+            criterion = AdaptiveLoss().to(device)
+            # Deprecated with config
+            # optimizer = optim.Adam(list(model.parameters()) + list(criterion.parameters()), 
+            #                       lr=1e-4, weight_decay=1e-4)
+        except NameError:
+            print("AdaptiveLoss not found, using standard loss functions")
+            use_adaptive_loss = False
+            classification_criterion = nn.CrossEntropyLoss()
+            reward_criterion = nn.MSELoss()
+    else:
+        classification_criterion = nn.CrossEntropyLoss()
+        reward_criterion = nn.MSELoss()
+    
+    # Cosine Annealing, gradient change may be better for this case
+    if selected_scheduler is not None:
+        scheduler = selected_scheduler
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=10, eta_min=1e-6
+        )
+    
+    best_val_loss = float('inf')
+    best_val_accuracy = 0.0
+    train_losses = []
+    val_losses = []
+    val_accuracies = []
+    
+    print(f"  Starting hybrid model training for {num_epochs} epochs...")
+    print(f"  Plot updates every {plot_update_frequency} batches")
+    print("=" * 80)
+    
+    try:
+        for epoch in range(num_epochs):
+            start_time = time.time()
+            
+            # Training phase
+            model.train()
+            running_loss = 0.0
+            running_class_loss = 0.0
+            running_reward_loss = 0.0
+            batch_count = 0
+            
+            for i, batch_data in enumerate(train_dataloader):
+                if len(batch_data) != 4:  # Need all components
+                    continue
+                    
+                inputs, labels, rewards, scan_indices = batch_data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                rewards = rewards.to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                class_outputs, reward_outputs = model(inputs)
+                
+                if use_adaptive_loss:
+                    total_loss, class_loss, reward_loss = criterion(
+                        class_outputs, labels, reward_outputs, rewards)
+                else:
+                    class_loss = classification_criterion(class_outputs, labels)
+                    reward_loss = reward_criterion(reward_outputs.squeeze(), rewards)
+                    total_loss = non_adaptive_reward_weight * reward_loss
+                
+                # Backward pass
+                total_loss.backward()
+                
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                # Update running statistics
+                running_loss += total_loss.item()
+                running_class_loss += class_loss.item()
+                running_reward_loss += reward_loss.item()
+                batch_count += 1
+                
+                # Update real-time plots
+                plotter.update_batch_metrics(
+                    total_loss.item(), 
+                    class_loss.item(), 
+                    reward_loss.item()
+                )
+                
+                # Print progress periodically
+                if (i + 1) % 100 == 0:
+                    avg_loss = running_loss / batch_count
+                    avg_class = running_class_loss / batch_count
+                    avg_reward = running_reward_loss / batch_count
+                    
+                    print(f"  Epoch [{epoch+1}/{num_epochs}] Batch [{i+1}/{len(train_dataloader)}] - "
+                          f"Loss: {total_loss.item():.4f} | Avg: {avg_loss:.4f} "
+                          f"(Class: {avg_class:.4f}, Reward: {avg_reward:.4f})")
+            
+            # Force plot update at end of epoch
+            plotter.update_batch_metrics(
+                total_loss.item(), class_loss.item(), reward_loss.item(), force_update=True
+            )
+            
+            # Validation phase
+            print(f"  Running validation...")
+
+            # Define the transform as an augmented transform
+            aug_transform = AugmentedTransform(base_size=base_image_size, crop_size=cropped_resolution, normalize=True)
+
+            # UPDATED: Pass the epoch number to enable validation plotting
+            val_loss, val_accuracy = validate_model_with_accuracy(
+                model, val_dataloader, device, use_adaptive_loss, 
+                criterion if use_adaptive_loss else None, 
+                val_plotter=None,  
+                epoch=(epoch + 1)  
+            )
+                        
+            # Learning rate scheduling
+            scheduler.step(val_loss)
+            
+            # Calculate epoch statistics
+            avg_train_loss = running_loss / len(train_dataloader)
+            avg_class_loss = running_class_loss / len(train_dataloader)
+            avg_reward_loss = running_reward_loss / len(train_dataloader)
+            
+            train_losses.append(avg_train_loss)
+            val_losses.append(val_loss)
+            val_accuracies.append(val_accuracy)
+            
+            # Update epoch-level plots
+            plotter.update_epoch_metrics(epoch + 1, val_loss, val_accuracy)
+            
+            # Print epoch summary
+            epoch_time = time.time() - start_time
+            print(f"\n  Epoch {epoch+1}/{num_epochs} Summary ({epoch_time:.1f}s):")
+            print(f"  Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            print(f"  Class Loss: {avg_class_loss:.6f} | Reward Loss: {avg_reward_loss:.6f}")
+            print(f"  Validation Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.2f}%)")
+            
+            if use_adaptive_loss:
+                print(f"  Adaptive weights - Class: {torch.exp(-criterion.log_var_class).item():.4f}, "
+                      f"Reward: {torch.exp(-criterion.log_var_reward).item():.4f}")
+            
+            # Save best model
+            if val_accuracy > best_val_accuracy:
+                best_val_loss = val_loss
+                best_val_accuracy = val_accuracy
+                
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                    'val_accuracy': val_accuracy,
+                    'train_losses': train_losses,
+                    'val_losses': val_losses,
+                    'val_accuracies': val_accuracies,
+                }, f'{output_filename}_{epoch+1}.pth')
+                
+                print(f"NEW BEST MODEL SAVED! (Val Loss: {val_loss:.6f}, Val Acc: {val_accuracy:.4f})")
+                
+                # Save plot of best model
+                # plotter.save_plot(f'best_model_epoch_{epoch+1}.png')
+            
+            print("=" * 80)
+    
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+        # print("Saving current progress...")
+        # plotter.save_plot('interrupted_training.png')
+    except Exception as e:
+        print(f"Error during training: {e}")
+        # plotter.save_plot('error_training.png')
+        raise
+    finally:
+        if not use_jupyter:
+            print("Training completed. Plot window will remain open...")
+            print("Close the plot window manually when done reviewing.")
+    
+    print(f"\nTraining completed.")
+    print(f"Best validation loss: {best_val_loss:.6f}")
+    print(f"Best validation accuracy: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
+    # print(f"Final plot saved as 'final_training_progress.png'")
+    
+    return train_losses, val_losses, val_accuracies, plotter
+
 """
 PI Concern #2: Labeling Fix. We now use the reward distribution to define classes instead of index.
 """
@@ -5726,7 +6134,7 @@ def load_multi_dataset_with_rewards(base_folders, dataset_names, reward_weights=
     #     all_labels, thresholds = generate_labels_from_rewards(all_rewards, num_classes)
     #     print(f"\nQuantile-based labeling thresholds: {thresholds}")
     if labeling_method == 'stratified':
-        all_labels, reward_ranges = generate_labels_from_rewards_stratified_debug(all_rewards, num_classes)
+        all_labels, reward_ranges = generate_labels_from_rewards_stratified(all_rewards, num_classes)
         print(f"\nStratified labeling reward ranges:")
         for class_id, range_info in reward_ranges.items():
             print(f"  Class {class_id}: {range_info['count']} samples, "
@@ -5834,13 +6242,14 @@ def compute_and_display_class_grid(grid, labels_dict, scan_start=0, reward_weigh
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     
     # Define colors for each class (0=worst to 4=best)
-    colors = ['#1f77b4',  '#2ca02c','#ffff00',  '#ff7f0e','#d62728',] 
+    colors = ['#1f77b4',  '#2ca02c', '#ffff00', '#ff7f0e', '#d62728', '#9467bd']  # Added 6th color   
     cmap = ListedColormap(colors)
     
     # Plot 1: Class assignments
     masked_class_grid = np.ma.masked_where(class_grid == -1, class_grid)
-    im1 = ax1.imshow(masked_class_grid, cmap=cmap, vmin=0, vmax=4)
-    
+    num_classes = 6
+    im1 = ax1.imshow(masked_class_grid, cmap=cmap, vmin=0, vmax=num_classes - 1)  
+
     # Add text annotations and colored boxes
     for i in range(n_rows):
         for j in range(n_cols):
@@ -5962,8 +6371,7 @@ def display_class_legend():
     """
     fig, ax = plt.subplots(1, 1, figsize=(8, 2))
     
-    colors = ['#d62728', '#ff7f0e', '#ffff00', '#2ca02c', '#1f77b4']
-    class_names = ['Class 0\n(estWorst Tip)', 'Class 1', 'Class 2', 'Class 3', 'Class 4\n(Worst Tip)']
+    colors = ['#1f77b4',  '#2ca02c', '#ffff00', '#ff7f0e', '#d62728', '#9467bd']  # Added 6th color    class_names = ['Class 0\n(estWorst Tip)', 'Class 1', 'Class 2', 'Class 3', 'Class 4\n(Worst Tip)']
     
     for i, (color, name) in enumerate(zip(colors, class_names)):
         rect = patches.Rectangle((i, 0), 0.8, 0.8, facecolor=color, edgecolor='black', linewidth=2)
@@ -6178,3 +6586,745 @@ def create_labels_dict_from_dataset_info(dataset_info):
     
     return labels_dict
 
+"""
+Reward-only regressor (experimental, not complete)
+"""
+
+def train_reward_only_model(model, 
+                           train_dataloader, 
+                           val_dataloader, 
+                           optimizer, 
+                           device, 
+                           num_epochs=10, 
+                           use_jupyter=True,
+                           
+                           base_image_size=256,
+                           cropped_resolution=86,
+                           plot_window_size=400,
+                           plot_update_frequency=5,
+                           plot_scroll_size=400, 
+
+                           selected_scheduler=None,
+                           output_filename='best_reward_model.pth'
+                           ):
+    """
+    Simplified training function for reward-only regression model
+    
+    Args:
+        plot_update_frequency: Update plot every N batches (lower = more frequent updates but slower)
+    """
+    
+    # Initialize simplified plotter for reward-only training
+    plotter = RealTimeHybridPlotter(  # You'll need to create this or modify existing plotter
+        use_jupyter=use_jupyter, 
+        window_size=plot_window_size,
+        update_frequency=plot_update_frequency,
+        scroll_size=plot_scroll_size
+    )
+    
+    # Simple MSE loss for reward regression
+    criterion = nn.MSELoss()
+    
+    # Scheduler setup
+    if selected_scheduler is not None:
+        scheduler = selected_scheduler
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=10, eta_min=1e-6
+        )
+    
+    best_val_loss = float('inf')
+    train_losses = []
+    val_losses = []
+    
+    print(f"  Starting reward-only model training for {num_epochs} epochs...")
+    print(f"  Plot updates every {plot_update_frequency} batches")
+    print("=" * 80)
+    
+    try:
+        for epoch in range(num_epochs):
+            start_time = time.time()
+            
+            # Training phase
+            model.train()
+            running_loss = 0.0
+            batch_count = 0
+            
+            for i, batch_data in enumerate(train_dataloader):
+                if len(batch_data) < 3:  # Need inputs, labels, rewards at minimum
+                    continue
+                    
+                inputs, labels, rewards = batch_data[:3]  # Only need inputs and rewards now
+                inputs = inputs.to(device)
+                rewards = rewards.to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass - model now only returns reward prediction
+                reward_outputs = model(inputs)
+                
+                # Simple MSE loss
+                loss = criterion(reward_outputs.squeeze(), rewards)
+                
+                # Backward pass
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                # Update running statistics
+                running_loss += loss.item()
+                batch_count += 1
+                
+                # Update real-time plots
+                plotter.update_batch_metrics(reward_loss=loss.item(), class_loss=0, total_loss=loss.item())
+                
+                # Print progress periodically
+                if (i + 1) % 100 == 0:
+                    avg_loss = running_loss / batch_count
+                    print(f"  Epoch [{epoch+1}/{num_epochs}] Batch [{i+1}/{len(train_dataloader)}] - "
+                          f"Loss: {loss.item():.4f} | Avg: {avg_loss:.4f}")
+            
+            # Force plot update at end of epoch
+                plotter.update_batch_metrics(reward_loss=loss.item(), class_loss=0, total_loss=loss.item(), force_update=True)
+            
+            # Validation phase
+            print(f"  Running validation...")
+            val_loss = validate_reward_model(model, val_dataloader, device, criterion)
+                        
+            # Learning rate scheduling
+            scheduler.step(val_loss)
+            
+            # Calculate epoch statistics
+            avg_train_loss = running_loss / len(train_dataloader)
+            
+            train_losses.append(avg_train_loss)
+            val_losses.append(val_loss)
+            
+            # Update epoch-level plots
+            plotter.update_epoch_metrics(epoch + 1, val_loss, )
+            
+            # Print epoch summary
+            epoch_time = time.time() - start_time
+            print(f"\n  Epoch {epoch+1}/{num_epochs} Summary ({epoch_time:.1f}s):")
+            print(f"  Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            
+            # Save best model
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                    'train_losses': train_losses,
+                    'val_losses': val_losses,
+                }, f'{output_filename}_{epoch+1}.pth')
+                
+                print(f"NEW BEST MODEL SAVED! (Val Loss: {val_loss:.6f})")
+            
+            print("=" * 80)
+    
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+    except Exception as e:
+        print(f"Error during training: {e}")
+        raise
+    finally:
+        if not use_jupyter:
+            print("Training completed. Plot window will remain open...")
+    
+    print(f"\nTraining completed.")
+    print(f"Best validation loss: {best_val_loss:.6f}")
+    
+    return train_losses, val_losses, plotter
+
+def validate_reward_model(model, val_dataloader, device, criterion):
+    """
+    Simplified validation function for reward-only model
+    """
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+    
+    with torch.no_grad():
+        for batch_data in val_dataloader:
+            if len(batch_data) < 3:
+                continue
+                
+            inputs, labels, rewards = batch_data[:3]
+            inputs = inputs.to(device)
+            rewards = rewards.to(device)
+            
+            # Forward pass
+            reward_outputs = model(inputs)
+            loss = criterion(reward_outputs.squeeze(), rewards)
+            
+            total_loss += loss.item() * inputs.size(0)
+            total_samples += inputs.size(0)
+    
+    avg_loss = total_loss / total_samples if total_samples > 0 else float('inf')
+    return avg_loss
+
+class RewardToClassConverter:
+    """
+    Converts continuous reward predictions to discrete classifications
+    using various strategies based on training data distribution
+    """
+    
+    def __init__(self, training_rewards, num_classes=5):
+        self.num_classes = num_classes
+        self.training_rewards = np.array(training_rewards)
+        self.reward_ranges = None
+        self.thresholds = None
+        
+    def fit_stratified_ranges(self):
+        """
+        Create class boundaries based on equal-sized stratified groups
+        (same logic as your original function)
+        """
+        # Remove NaN values
+        valid_rewards = self.training_rewards[~np.isnan(self.training_rewards)]
+        
+        if len(valid_rewards) == 0:
+            raise ValueError("No valid rewards found")
+        
+        # Sort rewards
+        sorted_rewards = np.sort(valid_rewards)
+        
+        # Calculate samples per class
+        total_samples = len(sorted_rewards)
+        samples_per_class = total_samples // self.num_classes
+        remainder = total_samples % self.num_classes
+        
+        # Find boundaries
+        self.thresholds = []
+        self.reward_ranges = {}
+        
+        start_idx = 0
+        for class_id in range(self.num_classes):
+            class_size = samples_per_class + (1 if class_id < remainder else 0)
+            end_idx = start_idx + class_size
+            
+            class_rewards = sorted_rewards[start_idx:end_idx]
+            self.reward_ranges[class_id] = {
+                'min': class_rewards[0],
+                'max': class_rewards[-1],
+                'count': len(class_rewards)
+            }
+            
+            # Threshold is the maximum value for this class
+            if class_id < self.num_classes - 1:
+                self.thresholds.append(class_rewards[-1])
+            
+            start_idx = end_idx
+        
+        print("Class boundaries fitted:")
+        for class_id, ranges in self.reward_ranges.items():
+            print(f"  Class {class_id}: [{ranges['min']:.4f}, {ranges['max']:.4f}] ({ranges['count']} samples)")
+    
+    def fit_percentile_ranges(self):
+        """
+        Create class boundaries based on percentiles
+        """
+        valid_rewards = self.training_rewards[~np.isnan(self.training_rewards)]
+        
+        # Calculate percentile boundaries
+        percentiles = np.linspace(0, 100, self.num_classes + 1)
+        self.thresholds = []
+        self.reward_ranges = {}
+        
+        for i in range(self.num_classes):
+            min_val = np.percentile(valid_rewards, percentiles[i])
+            max_val = np.percentile(valid_rewards, percentiles[i + 1])
+            
+            self.reward_ranges[i] = {
+                'min': min_val,
+                'max': max_val,
+                'percentile_range': f"{percentiles[i]:.1f}-{percentiles[i+1]:.1f}%"
+            }
+            
+            if i < self.num_classes - 1:
+                self.thresholds.append(max_val)
+        
+        print("Percentile-based class boundaries:")
+        for class_id, ranges in self.reward_ranges.items():
+            print(f"  Class {class_id}: [{ranges['min']:.4f}, {ranges['max']:.4f}] ({ranges['percentile_range']})")
+    
+    def predict_class(self, reward_values):
+        """
+        Convert reward predictions to class labels
+        
+        Args:
+            reward_values: Single reward value, list, or torch tensor
+        
+        Returns:
+            Class labels (0 to num_classes-1)
+        """
+        if self.thresholds is None:
+            raise ValueError("Must call fit_stratified_ranges() or fit_percentile_ranges() first")
+        
+        # Handle different input types
+        if isinstance(reward_values, torch.Tensor):
+            reward_values = reward_values.cpu().numpy()
+        
+        # Convert single value to array
+        is_single = np.isscalar(reward_values)
+        if is_single:
+            reward_values = [reward_values]
+        
+        reward_values = np.array(reward_values)
+        
+        # Initialize with highest class (for values above all thresholds)
+        class_labels = np.full(len(reward_values), self.num_classes - 1, dtype=int)
+        
+        # Assign classes based on thresholds
+        for i, threshold in enumerate(self.thresholds):
+            class_labels[reward_values <= threshold] = i
+        
+        # Handle NaN values (assign to worst class)
+        nan_mask = np.isnan(reward_values)
+        class_labels[nan_mask] = self.num_classes - 1
+        
+        return class_labels[0] if is_single else class_labels
+    
+    def predict_class_with_confidence(self, reward_values):
+        """
+        Predict class with confidence based on distance from class boundaries
+        
+        Returns:
+            (class_labels, confidence_scores)
+        """
+        class_labels = self.predict_class(reward_values)
+        
+        if isinstance(reward_values, torch.Tensor):
+            reward_values = reward_values.cpu().numpy()
+        
+        is_single = np.isscalar(reward_values)
+        if is_single:
+            reward_values = [reward_values]
+        
+        reward_values = np.array(reward_values)
+        confidence_scores = []
+        
+        for i, (reward, class_label) in enumerate(zip(reward_values, class_labels)):
+            if np.isnan(reward):
+                confidence_scores.append(0.0)
+                continue
+            
+            # Calculate distance from nearest boundary
+            if class_label == 0:
+                # First class - distance from upper boundary
+                boundary_dist = abs(reward - self.thresholds[0])
+                range_size = self.reward_ranges[0]['max'] - self.reward_ranges[0]['min']
+            elif class_label == self.num_classes - 1:
+                # Last class - distance from lower boundary
+                boundary_dist = abs(reward - self.thresholds[-1])
+                range_size = self.reward_ranges[class_label]['max'] - self.reward_ranges[class_label]['min']
+            else:
+                # Middle classes - distance from nearest boundary
+                lower_bound = self.thresholds[class_label - 1]
+                upper_bound = self.thresholds[class_label]
+                boundary_dist = min(abs(reward - lower_bound), abs(reward - upper_bound))
+                range_size = upper_bound - lower_bound
+            
+            # Normalize confidence (closer to center = higher confidence)
+            confidence = min(1.0, boundary_dist / (range_size / 2)) if range_size > 0 else 1.0
+            confidence_scores.append(confidence)
+        
+        confidence_scores = np.array(confidence_scores)
+        
+        if is_single:
+            return class_labels[0], confidence_scores[0]
+        else:
+            return class_labels, confidence_scores
+
+def setup_reward_to_class_converter(training_rewards, method='stratified'):
+    """
+    Setup converter using training data
+    """
+    converter = RewardToClassConverter(training_rewards)
+    
+    if method == 'stratified':
+        converter.fit_stratified_ranges()
+    elif method == 'percentile':
+        converter.fit_percentile_ranges()
+    else:
+        raise ValueError("Method must be 'stratified' or 'percentile'")
+    
+    return converter
+
+def inference_with_classification(model, dataloader, device, converter):
+    """
+    Run inference and convert rewards to classifications
+    """
+    model.eval()
+    all_rewards = []
+    all_classifications = []
+    all_confidences = []
+    
+    with torch.no_grad():
+        for batch_data in dataloader:
+            inputs = batch_data[0].to(device)
+            
+            # Get reward predictions
+            reward_outputs = model(inputs)
+            
+            # Convert to classifications
+            rewards = reward_outputs.squeeze().cpu().numpy()
+            classifications, confidences = converter.predict_class_with_confidence(rewards)
+            
+            all_rewards.extend(rewards)
+            all_classifications.extend(classifications)
+            all_confidences.extend(confidences)
+    
+    return all_rewards, all_classifications, all_confidences
+
+def train_reward_model_with_classification(model, train_dataloader, val_dataloader, 
+                                         training_rewards, device, **kwargs):
+    """
+    Train reward model and setup classification converter
+    """
+    # Setup converter using training rewards
+    converter = setup_reward_to_class_converter(training_rewards, method='stratified')
+    
+    train_losses, val_losses, plotter = train_reward_only_model(
+        model, train_dataloader, val_dataloader, device, **kwargs
+    )
+    
+    # Test classification conversion on validation set
+    print("\nTesting classification conversion on validation set...")
+    val_rewards, val_classifications, val_confidences = inference_with_classification(
+        model, val_dataloader, device, converter
+    )
+    
+    # Print classification distribution
+    unique, counts = np.unique(val_classifications, return_counts=True)
+    print("Validation classification distribution:")
+    for class_id, count in zip(unique, counts):
+        print(f"  Class {class_id}: {count} samples ({count/len(val_classifications)*100:.1f}%)")
+    
+    print(f"Average classification confidence: {np.mean(val_confidences):.3f}")
+    
+    return train_losses, val_losses, plotter, converter
+
+class RewardOnlyModel(nn.Module):
+    def __init__(self, num_classes, pretrained=True):
+        super().__init__()
+        self.backbone = models.resnet50(pretrained=pretrained)
+        self.backbone.fc = nn.Sequential(
+            nn.Linear(self.backbone.fc.in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, 1)  # Single output for reward
+        )
+    
+    def forward(self, x):
+        return self.backbone(x)  # Returns single tensor, not tuple
+
+def reward_only_model_from_config(config_path="config.yaml"):
+    """
+    Complete training pipeline for reward-only model with classification conversion capability
+    """
+    # Load config
+    config = TrainingConfig.from_yaml(config_path)
+    print("CONFIG KEYS:", config.__dict__.keys())
+
+    # Phase 1: Build device and training settings
+    device = build_device(config)
+    print(f"Using device: {device}")
+    print(f"NUMBER OF CLASSES: {config.num_classes}")
+
+    base_folder = config.original_dataset['base_folder']
+    dataset_folders = config.original_dataset['dataset_folders']
+
+    # Load data with reward-based labels
+    all_files, all_labels, all_rewards, dataset_info = load_multi_dataset_with_rewards_separate_stratification(
+        [base_folder],  # Note: wrapped in list to match expected format
+        dataset_folders, 
+        reward_weights=config.augmented_dataset['reward_weights'],
+        labeling_method='stratified',
+        num_classes=config.num_classes
+    )
+
+    print(f"\nDataset Summary:")
+    print(f"Total files: {len(all_files)}")
+    print(f"Label distribution: {np.bincount(all_labels)}")
+    
+    # Analyze label distribution
+    from collections import Counter
+    label_counts = Counter(all_labels)
+    print("Detailed label distribution:")
+    for label in sorted(label_counts.keys()):
+        print(f"  Class {label}: {label_counts[label]} samples")
+
+    # Step 1: Create train/val split indices BEFORE augmentation
+    from sklearn.model_selection import train_test_split
+
+    train_indices, val_indices = train_test_split(
+        np.arange(len(all_files)),
+        train_size=config.train_split_weight,
+        stratify=all_labels,  # This ensures balanced class distribution in both splits
+        random_state=42       # For reproducibility
+    )
+
+    # Step 2: Partition files/labels/rewards based on split
+    train_files = [all_files[i] for i in train_indices]
+    train_labels = [all_labels[i] for i in train_indices]
+    train_rewards = [all_rewards[i] for i in train_indices]
+
+    val_files = [all_files[i] for i in val_indices]
+    val_labels = [all_labels[i] for i in val_indices]
+    val_rewards = [all_rewards[i] for i in val_indices]
+
+    # Generate scan indices for backward compatibility with augmentation
+    train_scan_indices = list(range(len(train_files)))
+    val_scan_indices = list(range(len(val_files)))
+
+    print(f"\nTrain/Val Split Summary:")
+    print(f"Train set: {len(train_files)} files")
+    print(f"Val set: {len(val_files)} files")
+    print("Train labels distribution:", np.bincount(train_labels))
+    print("Val labels distribution:", np.bincount(val_labels))
+    
+    # Verify stratification worked
+    train_props = np.bincount(train_labels) / len(train_labels)
+    val_props = np.bincount(val_labels) / len(val_labels)
+    print("Train class proportions:", train_props)
+    print("Val class proportions:", val_props)
+
+    # Step 3: Apply augmentation to each split separately
+    print("\nCreating augmented train dataset...")
+    train_dataset = AugmentedIBWDataset(
+        train_files,
+        train_labels,
+        train_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
+
+    print("Creating validation dataset...")
+    val_dataset = AugmentedIBWDataset(
+        val_files,
+        val_labels,
+        val_scan_indices,
+        compute_rewards=config.augmented_dataset['compute_rewards'],
+        use_augmentation=config.augmented_dataset['use_data_augmentation'],
+        augmentation_factor=config.augmented_dataset['augmentation_factor'],
+        reward_weights=config.augmented_dataset['reward_weights']
+    )
+
+    print(f"Train set size after augmentation: {len(train_dataset)}")
+    print(f"Validation set size after augmentation: {len(val_dataset)}")
+
+    # Dataloaders
+    batch_size = config.training_batch_size
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
+
+    print(f"Training batches: {len(train_dataloader)}")
+    print(f"Validation batches: {len(val_dataloader)}")
+
+    # Phase 2: Build reward-only model (modified from your original)
+    model = RewardOnlyModel(num_classes=config.num_classes, pretrained=True).to(device)
+    optimizer = build_optimizer(config, model.parameters())
+    scheduler = build_scheduler(config, optimizer)
+
+    print("\nReward Distribution and Corresponding Classes:")
+    analysis = analyze_label_distribution(all_labels, all_rewards)
+    print("\nLabel distribution analysis:")
+    for label, stats in analysis.items():
+        print(f"Class {label}: {stats['count']} samples, "
+              f"avg reward: {stats['reward_mean']:.3f} ± {stats['reward_std']:.3f}")
+
+    # Create labels dictionary for visualization
+    labels_dict = create_labels_dict_from_file_paths(all_files, all_labels)
+
+    # Load and visualize each dataset grid
+    for dataset_name in ['read_out', 'wear_out']:
+        print(f"\n=== {dataset_name.upper()} DATASET ===")
+        grid = get_ibw_grid(f'exp_data2/{dataset_name}', grid_size=10)
+        
+        # Display the class assignments
+        class_grid, reward_grid = compute_and_display_class_grid(grid, labels_dict)
+        
+        # Analyze spatial patterns
+        analysis = analyze_class_distribution_in_grid(class_grid)
+
+    # NEW: Setup reward-to-class converter using training data
+    print("\nSetting up reward-to-class converter...")
+    converter = RewardToClassConverter(train_rewards, num_classes=config.num_classes)
+    converter.fit_stratified_ranges()  # Use same stratified approach as original labels
+
+    print("\nStarting reward-only training...")
+
+    # Training function (reward-only version)
+    train_losses, val_losses, plotter = train_reward_only_model(
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        optimizer=optimizer,
+        device=device,
+        num_epochs=config.num_epochs,
+        use_jupyter=config.training_uses_jupyter_notebook,
+        base_image_size=config.original_dataset['image_resolution'],
+        cropped_resolution=config.augmented_dataset['cropped_resolution'],
+
+        plot_window_size=config.plotter['window_size'],
+        plot_update_frequency=config.plotter['plot_update_frequency'],
+        plot_scroll_size=config.plotter['window_buffer_size'],
+        
+        selected_scheduler=scheduler,
+        output_filename=config.output_filename
+    )
+
+    print("\nEvaluating reward model on validation set...")
+    
+    # Get reward predictions and convert to classifications
+    val_rewards_pred, val_classifications_pred, val_confidences = inference_with_classification(
+        model, val_dataloader, device, converter
+    )
+
+    # Calculate reward regression metrics
+    val_reward_mse = np.mean((np.array(val_rewards_pred) - np.array(val_rewards))**2)
+    val_reward_mae = np.mean(np.abs(np.array(val_rewards_pred) - np.array(val_rewards)))
+    val_reward_r2 = 1 - (np.sum((np.array(val_rewards) - np.array(val_rewards_pred))**2) / 
+                         np.sum((np.array(val_rewards) - np.mean(val_rewards))**2))
+
+    print(f"\nReward Regression Metrics:")
+    print(f"  MSE: {val_reward_mse:.6f}")
+    print(f"  MAE: {val_reward_mae:.6f}")
+    print(f"  R²: {val_reward_r2:.6f}")
+
+    # Calculate classification accuracy using converted predictions
+    val_classification_accuracy = np.mean(np.array(val_classifications_pred) == np.array(val_labels))
+    
+    print(f"\nClassification Metrics (from converted rewards):")
+    print(f"  Accuracy: {val_classification_accuracy:.4f} ({val_classification_accuracy*100:.2f}%)")
+    print(f"  Average confidence: {np.mean(val_confidences):.3f}")
+
+    # Detailed classification analysis
+    from sklearn.metrics import classification_report, confusion_matrix
+    
+    print("\nDetailed Classification Report:")
+    print(classification_report(val_labels, val_classifications_pred, 
+                              target_names=[f'Class {i}' for i in range(config.num_classes)]))
+    
+    print("\nConfusion Matrix:")
+    cm = confusion_matrix(val_labels, val_classifications_pred)
+    print(cm)
+
+    # Compare predicted vs actual classification distributions
+    print("\nClassification Distribution Comparison:")
+    actual_dist = np.bincount(val_labels, minlength=config.num_classes)
+    predicted_dist = np.bincount(val_classifications_pred, minlength=config.num_classes)
+    
+    for i in range(config.num_classes):
+        print(f"  Class {i}: Actual={actual_dist[i]}, Predicted={predicted_dist[i]}, "
+              f"Diff={predicted_dist[i] - actual_dist[i]}")
+
+    # Test converter on training data to verify it works correctly
+    print("\nTesting converter on training data...")
+    train_rewards_pred, train_classifications_pred, train_confidences = inference_with_classification(
+        model, train_dataloader, device, converter
+    )
+    
+    train_classification_accuracy = np.mean(np.array(train_classifications_pred) == np.array(train_labels))
+    print(f"Training classification accuracy: {train_classification_accuracy:.4f}")
+
+    # Save model with additional metadata including converter
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'config': config.__dict__,
+        'dataset_info': dataset_info,
+        'label_distribution': {
+            'train': np.bincount(train_labels).tolist(),
+            'val': np.bincount(val_labels).tolist()
+        },
+        'converter_state': {
+            'reward_ranges': converter.reward_ranges,
+            'thresholds': converter.thresholds,
+            'num_classes': converter.num_classes
+        },
+        'validation_metrics': {
+            'reward_mse': val_reward_mse,
+            'reward_mae': val_reward_mae,
+            'reward_r2': val_reward_r2,
+            'classification_accuracy': val_classification_accuracy,
+            'average_confidence': np.mean(val_confidences)
+        }
+    }, config.output_filename)
+
+    print(f"Final reward-only model saved as '{config.output_filename}'.")
+    
+    return {
+        'model': model,
+        'converter': converter,
+        'train_dataset': train_dataset,
+        'val_dataset': val_dataset,
+        'dataset_info': dataset_info,
+        'train_labels': train_labels,
+        'val_labels': val_labels,
+        'train_rewards': train_rewards,
+        'val_rewards': val_rewards,
+        'val_predictions': {
+            'rewards': val_rewards_pred,
+            'classifications': val_classifications_pred,
+            'confidences': val_confidences
+        },
+        'metrics': {
+            'reward_mse': val_reward_mse,
+            'reward_mae': val_reward_mae,
+            'reward_r2': val_reward_r2,
+            'classification_accuracy': val_classification_accuracy
+        }
+    }
+
+def load_reward_model_with_converter(checkpoint_path):
+    """
+    Load a saved reward model and recreate the converter
+    """
+    checkpoint = torch.load(checkpoint_path)
+    
+    # Recreate converter from saved state
+    converter = RewardToClassConverter([], num_classes=checkpoint['converter_state']['num_classes'])
+    converter.reward_ranges = checkpoint['converter_state']['reward_ranges']
+    converter.thresholds = checkpoint['converter_state']['thresholds']
+    
+    return checkpoint, converter
+
+def predict_rewards_and_classes(model, dataloader, device, converter):
+    """
+    Get both reward predictions and class predictions for new data
+    """
+    model.eval()
+    all_rewards = []
+    all_classifications = []
+    all_confidences = []
+    
+    with torch.no_grad():
+        for batch_data in dataloader:
+            inputs = batch_data[0].to(device)
+            
+            # Get reward predictions
+            reward_outputs = model(inputs)
+            rewards = reward_outputs.squeeze().cpu().numpy()
+            
+            # Convert to classifications
+            classifications, confidences = converter.predict_class_with_confidence(rewards)
+            
+            all_rewards.extend(rewards)
+            all_classifications.extend(classifications)
+            all_confidences.extend(confidences)
+    
+    return {
+        'rewards': np.array(all_rewards),
+        'classifications': np.array(all_classifications),
+        'confidences': np.array(all_confidences)
+    }

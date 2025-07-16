@@ -98,13 +98,13 @@ training:
   training_uses_jupyter_notebook: true
 
   # If wanted, the number of classes can be changed from 5
-  num_classes: 4
+  num_classes: 5
 
   # If using both classifier and reward head, this allows the training to define
   # the collective ratio of weights for reward and classifier loss during training.
   # Else, it uses a pre-defined reward weight (below).
-  use_adaptive_loss:  true
-  non_adaptive_reward_weight: 5.0
+  use_adaptive_loss:  false
+  non_adaptive_reward_weight: 1.0
   
   # Live plotter configuration
   plotter:
