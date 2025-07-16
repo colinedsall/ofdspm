@@ -44,18 +44,18 @@ training:
     # If any weight is to be left out, set its reward to zero or disable compute_rewards
     reward_weights:
       # MAE between channel traces
-      phase_consistency: 10.0
+      phase_consistency: 15.0
       amplitude_consistency: 0.25
-      height_consistency: 10.0
+      height_consistency: 15.0
 
       # Calculated by scan index number
       tip_freshness: 0.00
 
       # One-channel statistics (trace only)
-      amplitude_std: 5.0
+      amplitude_std: 10.0
       height_entropy: 1.0
       phase_std: 2.0
-      height_skew: 2.5
+      height_skew: 15.0
       phase_skew: 0.75
   
   # Configure training optimizers: the Adam optimizer is the only one in use
@@ -90,7 +90,7 @@ training:
 
   # Defines the % of data used for training
   train_split_weight: 0.6   
-  num_epochs: 10
+  num_epochs: 20
   training_batch_size: 16
 
   # Set this flag to False if training is ran via script, else True
@@ -98,27 +98,27 @@ training:
   training_uses_jupyter_notebook: true
 
   # If wanted, the number of classes can be changed from 5
-  num_classes: 5
+  num_classes: 4
 
   # If using both classifier and reward head, this allows the training to define
   # the collective ratio of weights for reward and classifier loss during training.
   # Else, it uses a pre-defined reward weight (below).
   use_adaptive_loss:  true
-  non_adaptive_reward_weight: 1.0
+  non_adaptive_reward_weight: 5.0
   
   # Live plotter configuration
   plotter:
     # Defines window size to be used during plotting (px)
     window_size:  400
 
-    # Defines how many training batches per display update
-    plot_update_frequency:  5
+    # Defines how many training batches before a display update occurs
+    plot_update_frequency:  1
 
     # Defines the number of batches to be shown with the window while scrolling
     # Note that large buffers may cause memory issues.
-    window_buffer_size: 1200
+    window_buffer_size: 500
 
   # Output filename, (file extension .pth is added automatically)
-  output_filename:  'hybrid_trained_model_jul14'
+  output_filename:  'hybrid_trained_model_4cl'
 
 

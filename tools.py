@@ -63,6 +63,8 @@ from collections import deque
 from IPython.display import display, clear_output
 # from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from collections import Counter
+import matplotlib.patches as patches
+from matplotlib.colors import ListedColormap
 
 # PCA analysis
 from sklearn.decomposition import PCA
@@ -552,6 +554,35 @@ def clear_console():
     # For macOS and Linux
     else:
         _ = os.system('clear')
+
+def get_ibw_grid(ibw_parent_folder, grid_size=10, channel_name='Height (T)'):
+    # Take the parent folder provided and create an array of .ibw objects
+    # from the tools in tools.py
+
+    # Configure the grid as a 2D array
+    grid = [[None for _ in range(grid_size)] for _ in range(grid_size)]
+
+    # Assuming that the data is unordered or not named properly, let's
+    # grab the scan index from each file and store it in a dict
+    scan_index_dict = {}
+    for filename in os.listdir(ibw_parent_folder):
+        if filename.endswith('.ibw'):
+            scan_index = extract_scan_index_from_filename(filename)
+            scan_index_dict[filename] = scan_index
+
+    # Create a reverse lookup: scan_index -> filename
+    index_to_filename = {v: k for k, v in scan_index_dict.items()}
+
+    # Fill the grid based on scan index
+    for scan_index in range(grid_size * grid_size):
+        filename = index_to_filename.get(scan_index)
+        if filename:
+            row = scan_index // grid_size
+            col = scan_index % grid_size
+            filepath = os.path.join(ibw_parent_folder, filename)
+            grid[row][col] = load_ibw(filepath)
+
+    return grid
 
 """
 Hybrid model training functions and class definitions for adaptive loss training and a reward-aware model.
@@ -1611,12 +1642,12 @@ class RealTimeHybridPlotter:
         self.val_accuracies = []
         self.epoch_numbers = []
         
-        # NEW: Storage for validation batch metrics
-        self.val_batch_numbers = deque(maxlen=scroll_size)
-        self.val_batch_losses = deque(maxlen=scroll_size)
-        self.val_batch_accuracies = deque(maxlen=scroll_size)
-        self.current_val_epoch = 0
-        self.val_batch_counter = 0
+        # # NEW: Storage for validation batch metrics
+        # self.val_batch_numbers = deque(maxlen=scroll_size)
+        # self.val_batch_losses = deque(maxlen=scroll_size)
+        # self.val_batch_accuracies = deque(maxlen=scroll_size)
+        # self.current_val_epoch = 0
+        # self.val_batch_counter = 0
         
         # Storage for running averages (smoother plotting)
         self.running_total_loss = deque(maxlen=10)
@@ -1643,7 +1674,7 @@ class RealTimeHybridPlotter:
         self.ax3 = self.fig.add_subplot(gs[1, 1])  # Validation accuracy
         self.ax4 = self.fig.add_subplot(gs[2, :])  # Combined metrics
 
-        self.ax5 = self.fig.add_subplot(gs[3, :])  # Validation batch metrics
+        # self.ax5 = self.fig.add_subplot(gs[3, :])  # Validation batch metrics
         
         # Initialize batch loss plot (main real-time plot)
         self.line_total, = self.ax1.plot([], [], 'b-', label='Total Loss', linewidth=2, alpha=0.8)
@@ -1696,26 +1727,26 @@ class RealTimeHybridPlotter:
         self.ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
 
-        self.ax5_twin = self.ax5.twinx()
-        self.line_val_batch_loss, = self.ax5.plot([], [], 'darkred', linewidth=2, alpha=0.8, label='Val Batch Loss')
-        self.line_val_batch_acc, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=2, alpha=0.8, label='Val Batch Accuracy')
+        # self.ax5_twin = self.ax5.twinx()
+        # self.line_val_batch_loss, = self.ax5.plot([], [], 'darkred', linewidth=2, alpha=0.8, label='Val Batch Loss')
+        # self.line_val_batch_acc, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=2, alpha=0.8, label='Val Batch Accuracy')
         
-        # Add smoothed validation lines
-        self.line_val_batch_loss_smooth, = self.ax5.plot([], [], 'darkred', linewidth=1, alpha=0.5, linestyle='--', label='Val Loss (Smoothed)')
-        self.line_val_batch_acc_smooth, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=1, alpha=0.5, linestyle='--', label='Val Acc (Smoothed)')
+        # # Add smoothed validation lines
+        # self.line_val_batch_loss_smooth, = self.ax5.plot([], [], 'darkred', linewidth=1, alpha=0.5, linestyle='--', label='Val Loss (Smoothed)')
+        # self.line_val_batch_acc_smooth, = self.ax5_twin.plot([], [], 'darkgreen', linewidth=1, alpha=0.5, linestyle='--', label='Val Acc (Smoothed)')
         
-        self.ax5.set_title('Validation Progress - Real-Time (Per Batch)', fontweight='bold')
-        self.ax5.set_xlabel('Validation Batch Number')
-        self.ax5.set_ylabel('Validation Loss', color='darkred', fontweight='bold')
-        self.ax5_twin.set_ylabel('Validation Accuracy (%)', color='darkgreen', fontweight='bold')
-        self.ax5.tick_params(axis='y', labelcolor='darkred')
-        self.ax5_twin.tick_params(axis='y', labelcolor='darkgreen')
-        self.ax5.grid(True, alpha=0.3)
+        # self.ax5.set_title('Validation Progress - Real-Time (Per Batch)', fontweight='bold')
+        # self.ax5.set_xlabel('Validation Batch Number')
+        # self.ax5.set_ylabel('Validation Loss', color='darkred', fontweight='bold')
+        # self.ax5_twin.set_ylabel('Validation Accuracy (%)', color='darkgreen', fontweight='bold')
+        # self.ax5.tick_params(axis='y', labelcolor='darkred')
+        # self.ax5_twin.tick_params(axis='y', labelcolor='darkgreen')
+        # self.ax5.grid(True, alpha=0.3)
         
-        # Add validation batch legend
-        lines5, labels5 = self.ax5.get_legend_handles_labels()
-        lines5_twin, labels5_twin = self.ax5_twin.get_legend_handles_labels()
-        self.ax5.legend(lines5 + lines5_twin, labels5 + labels5_twin, loc='upper left')
+        # # Add validation batch legend
+        # lines5, labels5 = self.ax5.get_legend_handles_labels()
+        # lines5_twin, labels5_twin = self.ax5_twin.get_legend_handles_labels()
+        # self.ax5.legend(lines5 + lines5_twin, labels5 + labels5_twin, loc='upper left')
         
         # Add text box for current statistics
         self.stats_text = self.ax1.text(0.02, 0.98, '', transform=self.ax1.transAxes, 
@@ -1723,9 +1754,9 @@ class RealTimeHybridPlotter:
                                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         
 
-        self.val_stats_text = self.ax5.text(0.02, 0.98, '', transform=self.ax5.transAxes, 
-                                           fontsize=10, verticalalignment='top',
-                                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        # self.val_stats_text = self.ax5.text(0.02, 0.98, '', transform=self.ax5.transAxes, 
+        #                                    fontsize=10, verticalalignment='top',
+        #                                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
         
         # Show initial plot
         if use_jupyter:
@@ -2617,54 +2648,36 @@ def add_true_labels_to_results_using_scan_indices(results):
     
     return results
     
-def hb_generate_roc_auc_curve(results, num_classes=5, title="ROC Curve", output_path=None):
+def hb_generate_roc_auc_curve(results, true_labels, num_classes=5, title="ROC Curve"):
     """
     Generate and plot the ROC-AUC curve for multiclass classification.
+    
+    Args:
+        results: list of prediction dicts (must include 'class_probabilities')
+        true_labels: list/array of ground truth labels (generated from stratified rewards)
     """
-    y_true = []
-    y_probs = []
-
-    for r in results:
-        if r.get("true_class") is not None:
-            y_true.append(r["true_class"])
-            y_probs.append(r["class_probabilities"])
-
-    y_true = np.array(y_true)
+    y_probs = [r["class_probabilities"] for r in results]
     y_probs = np.array(y_probs)
-
-    # Binarize the output for multiclass ROC
+    y_true = np.array(true_labels)
+    
     y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
-
-    fpr = dict()
-    tpr = dict()
-    roc_auc = dict()
-
+    
+    fpr, tpr, roc_auc = {}, {}, {}
     for i in range(num_classes):
         fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_probs[:, i])
         roc_auc[i] = auc(fpr[i], tpr[i])
-
-    # Plot ROC curve
+    
     plt.figure(figsize=(10, 8))
     for i in range(num_classes):
-        plt.plot(fpr[i], tpr[i], lw=2, label=f'Class {i} (AUC = {roc_auc[i]:.2f})')
-
-    plt.plot([0, 1], [0, 1], 'k--', lw=1)
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
+        plt.plot(fpr[i], tpr[i], label=f'Class {i} (AUC={roc_auc[i]:.2f})')
+    plt.plot([0, 1], [0, 1], 'k--')
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.title(title)
-    plt.legend(loc='lower right')
+    plt.legend()
     plt.grid(True)
-
-    # if output_path:
-    #     # plt.savefig(output_path)
-    #     print(f"ROC curve saved to {output_path}")
-    # else:
-    #   plt.show()
-
     plt.show()
-
+    
     return roc_auc
 
 def hb_inspect_results(results, num_samples=5):
@@ -2785,6 +2798,28 @@ def hb_compute_confusion_matrix_from_multiple_folders(parent_folder, subfolders,
     plt.xlabel("Predicted Class")
     plt.ylabel("True Class")
     plt.show()
+    return cm
+
+def hb_compute_confusion_matrix_from_results(results, true_labels, num_classes=5, title="Confusion Matrix"):
+    """
+    Computes and plots a confusion matrix from prediction results and true labels.
+    
+    Args:
+        results: List of prediction dicts (must include 'predicted_class')
+        true_labels: Ground truth labels
+    """
+    predicted_classes = [r['predicted_class'] for r in results]
+    
+    cm = confusion_matrix(true_labels, predicted_classes, labels=list(range(num_classes)))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[f"Class {i}" for i in range(num_classes)])
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp.plot(ax=ax, cmap='Blues')
+    plt.title(title)
+    plt.xlabel("Predicted Class")
+    plt.ylabel("True Class")
+    plt.show()
+    
     return cm
 
 """
@@ -5067,16 +5102,31 @@ def hybrid_model_from_config(config_path="config.yaml"):
     # Phase 1: Build device and training settings
     device = build_device(config)
     print(f"Using device: {device}")
+    print(f"NUMBER OF CLASSES: {config.num_classes}")
+
 
     base_folder = config.original_dataset['base_folder']
     dataset_folders = config.original_dataset['dataset_folders']
 
-    # Load original data
-    all_files, all_labels, all_scan_indices, dataset_info = load_multi_dataset([base_folder], dataset_folders)
+    # Load data with reward-based labels
+    all_files, all_labels, all_rewards, dataset_info = load_multi_dataset_with_rewards_separate_stratification(
+        [base_folder],  # Note: wrapped in list to match expected format
+        dataset_folders, 
+        reward_weights=config.augmented_dataset['reward_weights'],
+        labeling_method='stratified',
+        num_classes=config.num_classes
+    )
 
     print(f"\nDataset Summary:")
     print(f"Total files: {len(all_files)}")
     print(f"Label distribution: {np.bincount(all_labels)}")
+    
+    # Analyze label distribution
+    from collections import Counter
+    label_counts = Counter(all_labels)
+    print("Detailed label distribution:")
+    for label in sorted(label_counts.keys()):
+        print(f"  Class {label}: {label_counts[label]} samples")
 
     # Step 1: Create train/val split indices BEFORE augmentation
     from sklearn.model_selection import train_test_split
@@ -5084,18 +5134,35 @@ def hybrid_model_from_config(config_path="config.yaml"):
     train_indices, val_indices = train_test_split(
         np.arange(len(all_files)),
         train_size=config.train_split_weight,
-        stratify=all_labels,  # Optional: preserves class balance
+        stratify=all_labels,  # This ensures balanced class distribution in both splits
         random_state=42       # For reproducibility
     )
 
-    # Step 2: Partition files/labels/indices based on split
+    # Step 2: Partition files/labels/rewards based on split
     train_files = [all_files[i] for i in train_indices]
     train_labels = [all_labels[i] for i in train_indices]
-    train_scan_indices = [all_scan_indices[i] for i in train_indices]
+    train_rewards = [all_rewards[i] for i in train_indices]
 
     val_files = [all_files[i] for i in val_indices]
     val_labels = [all_labels[i] for i in val_indices]
-    val_scan_indices = [all_scan_indices[i] for i in val_indices]
+    val_rewards = [all_rewards[i] for i in val_indices]
+
+    # Generate scan indices for backward compatibility with augmentation
+    # (if your augmentation code still expects scan indices)
+    train_scan_indices = list(range(len(train_files)))
+    val_scan_indices = list(range(len(val_files)))
+
+    print(f"\nTrain/Val Split Summary:")
+    print(f"Train set: {len(train_files)} files")
+    print(f"Val set: {len(val_files)} files")
+    print("Train labels distribution:", np.bincount(train_labels))
+    print("Val labels distribution:", np.bincount(val_labels))
+    
+    # Verify stratification worked
+    train_props = np.bincount(train_labels) / len(train_labels)
+    val_props = np.bincount(val_labels) / len(val_labels)
+    print("Train class proportions:", train_props)
+    print("Val class proportions:", val_props)
 
     # Step 3: Apply augmentation to each split separately
     print("\nCreating augmented train dataset...")
@@ -5109,13 +5176,6 @@ def hybrid_model_from_config(config_path="config.yaml"):
         reward_weights=config.augmented_dataset['reward_weights']
     )
 
-    # Previous Issue: Training used 72x augmentation while validation used 1x 
-    # (no augmentation), creating an artificial domain gap that didn't reflect 
-    # real-world inference conditions.
-    #
-    # Current Solution: Both training and validation now use 72x augmentation
-    # to match the inference pipeline, where predictions are averaged across
-    # multiple augmented views of the same image.
     print("Creating validation dataset...")
     val_dataset = AugmentedIBWDataset(
         val_files,
@@ -5127,13 +5187,8 @@ def hybrid_model_from_config(config_path="config.yaml"):
         reward_weights=config.augmented_dataset['reward_weights']
     )
 
-    print(f"Train set size: {len(train_dataset)}")
-    print(f"Validation set size: {len(val_dataset)}")
-    print("Train labels distribution:", np.bincount(train_labels))
-    print("Val labels distribution:", np.bincount(val_labels))
-
-    # np.save('train_indices.npy', train_indices)
-    # np.save('val_indices.npy', val_indices)
+    print(f"Train set size after augmentation: {len(train_dataset)}")
+    print(f"Validation set size after augmentation: {len(val_dataset)}")
 
     # Dataloaders
     batch_size = config.training_batch_size
@@ -5143,10 +5198,33 @@ def hybrid_model_from_config(config_path="config.yaml"):
     print(f"Training batches: {len(train_dataloader)}")
     print(f"Validation batches: {len(val_dataloader)}")
 
-    # Phase 2: Build model, optimizer, and scheduler now
+    # Phase 2: Build model, optimizer, and scheduler
     model = RewardAwareModel(num_classes=config.num_classes, pretrained=True).to(device)
     optimizer = build_optimizer(config, model.parameters())
     scheduler = build_scheduler(config, optimizer)
+
+    print("\nReward Distribution and Corresponding Classes:")
+
+    analysis = analyze_label_distribution(all_labels, all_rewards)
+    print("\nLabel distribution analysis:")
+    for label, stats in analysis.items():
+        print(f"Class {label}: {stats['count']} samples, "
+              f"avg reward: {stats['reward_mean']:.3f} ± {stats['reward_std']:.3f}")
+
+    # Create labels dictionary for visualization
+    labels_dict = create_labels_dict_from_file_paths(all_files, all_labels)
+
+    # Load and visualize each dataset grid
+    for dataset_name in ['read_out', 'wear_out']:
+        print(f"\n=== {dataset_name.upper()} DATASET ===")
+        grid = get_ibw_grid(f'exp_data2/{dataset_name}', grid_size=10)
+        
+        # Display the class assignments
+        class_grid, reward_grid = compute_and_display_class_grid(grid, labels_dict)
+        
+        # Analyze spatial patterns
+        analysis = analyze_class_distribution_in_grid(class_grid)
+
 
     print("\nStarting training...")
 
@@ -5177,12 +5255,30 @@ def hybrid_model_from_config(config_path="config.yaml"):
     print("\nEvaluating on validation set...")
     evaluate_hybrid_model(model, val_dataloader, device)
 
+    # Save model with additional metadata
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'config': config.__dict__,
+        'dataset_info': dataset_info,
+        'label_distribution': {
+            'train': np.bincount(train_labels).tolist(),
+            'val': np.bincount(val_labels).tolist()
+        }
     }, config.output_filename)
 
     print(f"Final model saved as '{config.output_filename}'.")
+    
+    return {
+        'model': model,
+        'train_dataset': train_dataset,
+        'val_dataset': val_dataset,
+        'dataset_info': dataset_info,
+        'train_labels': train_labels,
+        'val_labels': val_labels,
+        'train_rewards': train_rewards,
+        'val_rewards': val_rewards
+    }
 
 def train_hybrid_model_with_config(model, 
                                    train_dataloader, 
@@ -5218,13 +5314,6 @@ def train_hybrid_model_with_config(model,
         window_size=plot_window_size,    # Larger window for better visualization
         update_frequency=plot_update_frequency,
         scroll_size=plot_scroll_size     # Define the scroll window size here
-    )
-
-    val_plotter = RealTimeHybridPlotter(
-        use_jupyter=use_jupyter, 
-        window_size=plot_window_size,    
-        update_frequency=plot_update_frequency,
-        scroll_size=plot_scroll_size     
     )
     
     # Setup loss function and optimizer
@@ -5340,8 +5429,8 @@ def train_hybrid_model_with_config(model,
             val_loss, val_accuracy = validate_model_with_accuracy(
                 model, val_dataloader, device, use_adaptive_loss, 
                 criterion if use_adaptive_loss else None, 
-                val_plotter,  # Pass the plotter
-                epoch=(epoch + 1)  # Pass the current epoch number
+                val_plotter=None,  
+                epoch=(epoch + 1)  
             )
                         
             # Learning rate scheduling
@@ -5412,4 +5501,680 @@ def train_hybrid_model_with_config(model,
     # print(f"Final plot saved as 'final_training_progress.png'")
     
     return train_losses, val_losses, val_accuracies, plotter
+
+"""
+PI Concern #2: Labeling Fix. We now use the reward distribution to define classes instead of index.
+"""
+
+def compute_rewards_for_files(ibw_files, reward_weights=None):
+    """
+    Compute rewards for all IBW files to create a reward distribution.
+    
+    Args:
+        ibw_files: List of IBW file paths
+        reward_weights: Dict of reward component weights (optional)
+    
+    Returns:
+        rewards: List of computed rewards for each file
+        reward_details: List of detailed reward breakdowns
+    """
+    if reward_weights is None:
+        reward_weights = {
+            'phase_consistency': 15.0,
+            'amplitude_consistency': 0.25,
+            'height_consistency': 15.0,
+            'tip_freshness': 0.00,
+            'amplitude_std': 5.0,
+            'height_entropy': 1.0,
+            'phase_std': 2.0,
+            'height_skew': 2.5,
+            'phase_skew': 0.75
+        }
+    
+    rewards = []
+    reward_details = []
+    
+    for i, file_path in enumerate(ibw_files):
+        try:
+            ibw_obj = load_ibw(file_path)
+            total_reward, rewards_dict = compute_reward_with_top_features(
+                ibw_obj, scan_index=i, weights=reward_weights, return_all=True
+            )
+            rewards.append(total_reward)
+            reward_details.append(rewards_dict)
+            
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+            rewards.append(np.nan)
+            reward_details.append({})
+    
+    return rewards, reward_details
+
+def generate_labels_from_rewards(rewards, num_classes=5):
+    """
+    Generate labels based on reward distribution using quantiles.
+    This creates evenly-sized classes based on actual scan quality.
+    
+    Args:
+        rewards: List of computed rewards
+        num_classes: Number of discrete classes to create
+    
+    Returns:
+        labels: List of class labels (0 to num_classes-1)
+        thresholds: The reward thresholds used for each class
+    """
+    # Remove NaN values for percentile calculation
+    valid_rewards = [r for r in rewards if not np.isnan(r)]
+    
+    if not valid_rewards:
+        raise ValueError("No valid rewards found")
+    
+    # Calculate quantile thresholds
+    percentiles = np.linspace(0, 100, num_classes + 1)
+    thresholds = np.percentile(valid_rewards, percentiles)
+    
+    # Assign labels based on thresholds
+    labels = []
+    for reward in rewards:
+        if np.isnan(reward):
+            # Handle NaN rewards - could assign to worst class or skip
+            labels.append(num_classes - 1)  # Assign to worst class
+        else:
+            # Find which quantile bin this reward falls into
+            label = np.searchsorted(thresholds[1:], reward, side='right')
+            labels.append(min(label, num_classes - 1))
+    
+    return labels, thresholds
+
+def generate_labels_from_rewards_stratified(rewards, num_classes=5):
+    """
+    Alternative approach: Create exactly equal-sized classes by sorting
+    and dividing into equal groups.
+    
+    Args:
+        rewards: List of computed rewards
+        num_classes: Number of discrete classes to create
+    
+    Returns:
+        labels: List of class labels (0 to num_classes-1)
+        reward_ranges: Dict showing reward ranges for each class
+    """
+    # Create index-reward pairs to maintain original order
+    indexed_rewards = [(i, r) for i, r in enumerate(rewards) if not np.isnan(r)]
+    
+    if not indexed_rewards:
+        raise ValueError("No valid rewards found")
+    
+    # Sort by reward value (ascending - lower rewards = worse tip condition)
+    indexed_rewards.sort(key=lambda x: x[1])
+    
+    # Calculate samples per class
+    total_samples = len(indexed_rewards)
+    samples_per_class = total_samples // num_classes
+    remainder = total_samples % num_classes
+    
+    # Initialize labels array
+    labels = [0] * len(rewards)
+    reward_ranges = {}
+    
+    # Assign labels ensuring equal class sizes
+    start_idx = 0
+    for class_id in range(num_classes):
+        # Add one extra sample to first 'remainder' classes
+        class_size = samples_per_class + (1 if class_id < remainder else 0)
+        end_idx = start_idx + class_size
+        
+        # Get reward range for this class
+        class_rewards = [indexed_rewards[i][1] for i in range(start_idx, end_idx)]
+        reward_ranges[class_id] = {
+            'min': min(class_rewards),
+            'max': max(class_rewards),
+            'count': len(class_rewards)
+        }
+        
+        # Assign labels
+        for i in range(start_idx, end_idx):
+            original_idx, _ = indexed_rewards[i]
+            labels[original_idx] = class_id
+        
+        start_idx = end_idx
+    
+    # Handle NaN rewards
+    for i, reward in enumerate(rewards):
+        if np.isnan(reward):
+            labels[i] = num_classes - 1  # Assign to worst class
+    
+    return labels, reward_ranges
+
+def load_multi_dataset_with_rewards(base_folders, dataset_names, reward_weights=None, 
+                                   labeling_method='stratified', num_classes=5):
+    """
+    Enhanced version of load_multi_dataset that uses reward-based labeling.
+    
+    Args:
+        base_folders: List of base folder paths
+        dataset_names: List of dataset subfolder names
+        reward_weights: Dict of reward component weights
+        labeling_method: 'quantile' or 'stratified'
+        num_classes: Number of discrete classes
+    
+    Returns:
+        all_files: List of all IBW file paths
+        all_labels: List of corresponding reward-based labels
+        all_rewards: List of computed rewards
+        dataset_info: Dict with dataset metadata including reward statistics
+    """
+    all_files = []
+    all_rewards = []
+    dataset_info = {}
+    
+    # First pass: collect all files and compute rewards
+    for base_folder in base_folders:
+        for dataset_name in dataset_names:
+            dataset_path = os.path.join(base_folder, dataset_name)
+            
+            if not os.path.exists(dataset_path):
+                print(f"Warning: Dataset path {dataset_path} does not exist, skipping...")
+                continue
+                
+            # Get all IBW files for this dataset
+            ibw_files = sorted([
+                os.path.join(dataset_path, f) 
+                for f in os.listdir(dataset_path) 
+                if f.lower().endswith(".ibw")
+            ])
+            
+            if not ibw_files:
+                print(f"Warning: No IBW files found in {dataset_path}, skipping...")
+                continue
+            
+            print(f"Computing rewards for {len(ibw_files)} files in {dataset_path}...")
+            
+            # Compute rewards for this dataset
+            rewards, reward_details = compute_rewards_for_files(ibw_files, reward_weights)
+            
+            # Store dataset info
+            dataset_key = f"{os.path.basename(base_folder)}_{dataset_name}"
+            dataset_info[dataset_key] = {
+                'files': ibw_files,
+                'rewards': rewards,
+                'reward_details': reward_details,
+                'count': len(ibw_files),
+                'reward_stats': {
+                    'mean': np.nanmean(rewards),
+                    'std': np.nanstd(rewards),
+                    'min': np.nanmin(rewards),
+                    'max': np.nanmax(rewards)
+                }
+            }
+            
+            # Add to master lists
+            all_files.extend(ibw_files)
+            all_rewards.extend(rewards)
+    
+    if not all_files:
+        raise ValueError("No files found in any dataset")
+    
+    print(f"\nTotal files loaded: {len(all_files)}")
+    print(f"Overall reward statistics:")
+    print(f"  Mean: {np.nanmean(all_rewards):.3f}")
+    print(f"  Std: {np.nanstd(all_rewards):.3f}")
+    print(f"  Range: {np.nanmin(all_rewards):.3f} to {np.nanmax(all_rewards):.3f}")
+    
+    # Generate labels based on reward distribution
+    # if labeling_method == 'quantile':
+    #     all_labels, thresholds = generate_labels_from_rewards(all_rewards, num_classes)
+    #     print(f"\nQuantile-based labeling thresholds: {thresholds}")
+    if labeling_method == 'stratified':
+        all_labels, reward_ranges = generate_labels_from_rewards_stratified_debug(all_rewards, num_classes)
+        print(f"\nStratified labeling reward ranges:")
+        for class_id, range_info in reward_ranges.items():
+            print(f"  Class {class_id}: {range_info['count']} samples, "
+                  f"rewards {range_info['min']:.3f} to {range_info['max']:.3f}")
+    else:
+        raise ValueError(f"Unknown labeling method: {labeling_method}")
+    
+    # Add labels to dataset info
+    start_idx = 0
+    for key, info in dataset_info.items():
+        end_idx = start_idx + info['count']
+        info['labels'] = all_labels[start_idx:end_idx]
+        start_idx = end_idx
+    
+    print(f"\nDataset breakdown:")
+    for key, info in dataset_info.items():
+        print(f"  {key}: {info['count']} files, reward range: "
+              f"{info['reward_stats']['min']:.3f} to {info['reward_stats']['max']:.3f}")
+    
+    return all_files, all_labels, all_rewards, dataset_info
+
+def analyze_label_distribution(labels, rewards):
+    """
+    Analyze the distribution of labels and their corresponding rewards.
+    
+    Args:
+        labels: List of class labels
+        rewards: List of corresponding rewards
+    
+    Returns:
+        analysis: Dict with distribution statistics
+    """
+    analysis = {}
+    unique_labels = sorted(set(labels))
+    
+    for label in unique_labels:
+        label_rewards = [r for i, r in enumerate(rewards) if labels[i] == label and not np.isnan(r)]
+        analysis[label] = {
+            'count': len([l for l in labels if l == label]),
+            'reward_mean': np.mean(label_rewards) if label_rewards else np.nan,
+            'reward_std': np.std(label_rewards) if label_rewards else np.nan,
+            'reward_min': np.min(label_rewards) if label_rewards else np.nan,
+            'reward_max': np.max(label_rewards) if label_rewards else np.nan
+        }
+    
+    return analysis
+
+def compute_and_display_class_grid(grid, labels_dict, scan_start=0, reward_weights=None):
+    """
+    Display a grid showing the class assignment for each scan with color-coded boxes.
+    
+    Args:
+        grid: 2D array of ibw objects from get_ibw_grid()
+        labels_dict: Dictionary mapping scan_index to class label
+        scan_start: Starting scan index (default 0)
+        reward_weights: Optional reward weights for computing rewards
+    
+    Returns:
+        class_grid: 2D numpy array of class assignments
+        reward_grid: 2D numpy array of computed rewards
+    """
+    n_rows = len(grid)
+    n_cols = len(grid[0]) if n_rows > 0 else 0
+    
+    # Initialize grids
+    class_grid = np.full((n_rows, n_cols), -1, dtype=int)  # -1 for missing data
+    reward_grid = np.full((n_rows, n_cols), np.nan)
+    
+    # Default reward weights if not provided
+    if reward_weights is None:
+        reward_weights = {
+            'phase_consistency': 15.0,
+            'amplitude_consistency': 0.25,
+            'height_consistency': 15.0,
+            'tip_freshness': 0.00,
+            'amplitude_std': 5.0,
+            'height_entropy': 1.0,
+            'phase_std': 2.0,
+            'height_skew': 2.5,
+            'phase_skew': 0.75
+        }
+    
+    # Fill grids
+    for i in range(n_rows):
+        for j in range(n_cols):
+            ibw_obj = grid[i][j]
+            if ibw_obj is not None:
+                scan_index = i * n_cols + j + scan_start
+                
+                # Get class label
+                if scan_index in labels_dict:
+                    class_grid[i, j] = labels_dict[scan_index]
+                
+                # Compute reward
+                try:
+                    from tools import compute_reward_with_top_features
+                    total_reward, _ = compute_reward_with_top_features(
+                        ibw_obj, scan_index=scan_index, weights=reward_weights, return_all=True
+                    )
+                    reward_grid[i, j] = total_reward
+                except Exception as e:
+                    print(f"Error computing reward for scan {scan_index}: {e}")
+    
+    # Create the visualization
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    
+    # Define colors for each class (0=worst to 4=best)
+    colors = ['#1f77b4',  '#2ca02c','#ffff00',  '#ff7f0e','#d62728',] 
+    cmap = ListedColormap(colors)
+    
+    # Plot 1: Class assignments
+    masked_class_grid = np.ma.masked_where(class_grid == -1, class_grid)
+    im1 = ax1.imshow(masked_class_grid, cmap=cmap, vmin=0, vmax=4)
+    
+    # Add text annotations and colored boxes
+    for i in range(n_rows):
+        for j in range(n_cols):
+            if class_grid[i, j] != -1:
+                # Add colored box border
+                rect = patches.Rectangle((j-0.4, i-0.4), 0.8, 0.8, 
+                                       linewidth=3, edgecolor=colors[class_grid[i, j]], 
+                                       facecolor='none')
+                ax1.add_patch(rect)
+                
+                # Add class label text
+                ax1.text(j, i, f"C{class_grid[i, j]}", ha='center', va='center', 
+                        color='white', fontweight='bold', fontsize=12)
+            else:
+                ax1.text(j, i, "N/A", ha='center', va='center', 
+                        color='gray', fontsize=10)
+    
+    ax1.set_title("Class Assignments (C0=Best → C4=Worst)", fontsize=14, fontweight='bold')
+    ax1.set_xlabel("Grid Column")
+    ax1.set_ylabel("Grid Row")
+    
+    # Create custom colorbar for classes
+    cbar1 = plt.colorbar(im1, ax=ax1, ticks=[0, 1, 2, 3, 4])
+    cbar1.set_label('Tip Condition Class', rotation=270, labelpad=20)
+    cbar1.set_ticklabels(['C0\n(Best)', 'C1', 'C2', 'C3', 'C4\n(Worst)'])
+    
+    # Plot 2: Reward values with class color coding
+    im2 = ax2.imshow(reward_grid, cmap='viridis', vmin=np.nanmin(reward_grid), vmax=np.nanmax(reward_grid))
+    
+    # Add colored boxes and reward values
+    for i in range(n_rows):
+        for j in range(n_cols):
+            if not np.isnan(reward_grid[i, j]) and class_grid[i, j] != -1:
+                # Add colored box border based on class
+                rect = patches.Rectangle((j-0.4, i-0.4), 0.8, 0.8, 
+                                       linewidth=3, edgecolor=colors[class_grid[i, j]], 
+                                       facecolor='none')
+                ax2.add_patch(rect)
+                
+                # Add reward value text
+                ax2.text(j, i, f"{reward_grid[i, j]:.1f}", ha='center', va='center', 
+                        color='white', fontweight='bold', fontsize=8)
+            elif np.isnan(reward_grid[i, j]):
+                ax2.text(j, i, "N/A", ha='center', va='center', 
+                        color='gray', fontsize=10)
+    
+    ax2.set_title("Reward Values (Colored by Class)", fontsize=14, fontweight='bold')
+    ax2.set_xlabel("Grid Column")
+    ax2.set_ylabel("Grid Row")
+    
+    cbar2 = plt.colorbar(im2, ax=ax2)
+    cbar2.set_label('Reward Value', rotation=270, labelpad=20)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return class_grid, reward_grid
+
+def create_labels_dict_from_file_paths(file_paths, labels):
+    """
+    Create a dictionary mapping scan indices to labels based on file paths.
+    
+    Args:
+        file_paths: List of file paths
+        labels: List of corresponding labels
+    
+    Returns:
+        labels_dict: Dictionary mapping scan_index to label
+    """
+    labels_dict = {}
+    
+    for file_path, label in zip(file_paths, labels):
+        try:
+            from tools import extract_scan_index_from_filename
+            filename = os.path.basename(file_path)
+            scan_index = extract_scan_index_from_filename(filename)
+            labels_dict[scan_index] = label
+        except Exception as e:
+            print(f"Error extracting scan index from {filename}: {e}")
+    
+    return labels_dict
+
+def analyze_class_distribution_in_grid(class_grid):
+    """
+    Analyze the spatial distribution of classes in the grid.
+    
+    Args:
+        class_grid: 2D numpy array of class assignments
+    
+    Returns:
+        analysis: Dictionary with spatial analysis results
+    """
+    n_rows, n_cols = class_grid.shape
+    analysis = {}
+    
+    # Count classes
+    unique_classes = np.unique(class_grid[class_grid != -1])
+    for class_id in unique_classes:
+        positions = np.where(class_grid == class_id)
+        analysis[class_id] = {
+            'count': len(positions[0]),
+            'positions': list(zip(positions[0], positions[1])),
+            'avg_row': np.mean(positions[0]),
+            'avg_col': np.mean(positions[1])
+        }
+    
+    # Check for spatial patterns
+    print("\nSpatial Distribution Analysis:")
+    for class_id in sorted(unique_classes):
+        info = analysis[class_id]
+        print(f"Class {class_id}: {info['count']} scans, "
+              f"avg position: ({info['avg_row']:.1f}, {info['avg_col']:.1f})")
+    
+    return analysis
+
+def display_class_legend():
+    """
+    Display a legend explaining the class color coding.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(8, 2))
+    
+    colors = ['#d62728', '#ff7f0e', '#ffff00', '#2ca02c', '#1f77b4']
+    class_names = ['Class 0\n(estWorst Tip)', 'Class 1', 'Class 2', 'Class 3', 'Class 4\n(Worst Tip)']
+    
+    for i, (color, name) in enumerate(zip(colors, class_names)):
+        rect = patches.Rectangle((i, 0), 0.8, 0.8, facecolor=color, edgecolor='black', linewidth=2)
+        ax.add_patch(rect)
+        ax.text(i + 0.4, 0.4, name, ha='center', va='center', fontweight='bold', fontsize=10)
+    
+    ax.set_xlim(-0.2, 5.2)
+    ax.set_ylim(-0.2, 1.0)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title('Class Color Coding Legend', fontsize=14, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_reward_based_classes(base_folder, dataset_name, files, labels, rewards):
+    """
+    Complete workflow to visualize reward-based classes in grid format.
+    
+    Args:
+        base_folder: Base folder path
+        dataset_name: Dataset name
+        files: List of file paths
+        labels: List of class labels
+        rewards: List of computed rewards
+    """
+    # Load the grid
+    from tools import get_ibw_grid
+    grid_folder = os.path.join(base_folder, dataset_name)
+    grid = get_ibw_grid(grid_folder, grid_size=10)
+    
+    # Create labels dictionary
+    labels_dict = create_labels_dict_from_file_paths(files, labels)
+    
+    # Display legend
+    display_class_legend()
+    
+    # Compute and display class grid
+    class_grid, reward_grid = compute_and_display_class_grid(grid, labels_dict)
+    
+    # Analyze spatial distribution
+    analysis = analyze_class_distribution_in_grid(class_grid)
+    
+    return class_grid, reward_grid, analysis
+
+def generate_labels_from_rewards_stratified_separated(rewards, num_classes=5):
+    """
+    Corrected version that properly stratifies ALL samples.
+    """
+    total_samples = len(rewards)
+    
+    if total_samples == 0:
+        raise ValueError("No rewards found")
+    
+    # Create index-reward pairs for ALL rewards
+    indexed_rewards = [(i, r) for i, r in enumerate(rewards)]
+    
+    # Sort by reward value, putting NaN values at the end (worst performance)
+    indexed_rewards.sort(key=lambda x: (np.isnan(x[1]), x[1] if not np.isnan(x[1]) else 0))
+    
+    # Calculate samples per class based on TOTAL samples
+    samples_per_class = total_samples // num_classes
+    remainder = total_samples % num_classes
+    
+    print(f"Total samples: {total_samples}")
+    print(f"Samples per class: {samples_per_class}")
+    print(f"Remainder: {remainder}")
+    print(f"Class sizes will be: {[samples_per_class + (1 if i < remainder else 0) for i in range(num_classes)]}")
+    
+    # Initialize labels array
+    labels = [0] * total_samples
+    reward_ranges = {}
+    
+    # Assign labels ensuring equal class sizes
+    start_idx = 0
+    for class_id in range(num_classes):
+        # Add one extra sample to first 'remainder' classes
+        class_size = samples_per_class + (1 if class_id < remainder else 0)
+        end_idx = start_idx + class_size
+        
+        # Get rewards for this class (excluding NaN for statistics)
+        class_rewards = []
+        for i in range(start_idx, end_idx):
+            original_idx, reward_val = indexed_rewards[i]
+            labels[original_idx] = class_id
+            if not np.isnan(reward_val):
+                class_rewards.append(reward_val)
+        
+        # Record reward range for this class
+        reward_ranges[class_id] = {
+            'min': min(class_rewards) if class_rewards else np.nan,
+            'max': max(class_rewards) if class_rewards else np.nan,
+            'count': class_size,
+            'valid_count': len(class_rewards),
+            'nan_count': class_size - len(class_rewards)
+        }
+        
+        start_idx = end_idx
+    
+    # Verify stratification
+    class_counts = [labels.count(i) for i in range(num_classes)]
+    print(f"Final class counts: {class_counts}")
+    
+    return labels, reward_ranges
+
+def load_multi_dataset_with_rewards_separate_stratification(base_folders, dataset_names, reward_weights=None, 
+                                                          labeling_method='stratified', num_classes=5):
+    """
+    Enhanced version that stratifies each dataset separately to ensure even distribution
+    within each dataset for visualization purposes.
+    """
+    all_files = []
+    all_rewards = []
+    all_labels = []
+    dataset_info = {}
+    
+    # Process each dataset separately
+    for base_folder in base_folders:
+        for dataset_name in dataset_names:
+            dataset_path = os.path.join(base_folder, dataset_name)
+            
+            if not os.path.exists(dataset_path):
+                print(f"Warning: Dataset path {dataset_path} does not exist, skipping...")
+                continue
+                
+            # Get all IBW files for this dataset
+            ibw_files = sorted([
+                os.path.join(dataset_path, f) 
+                for f in os.listdir(dataset_path) 
+                if f.lower().endswith(".ibw")
+            ])
+            
+            if not ibw_files:
+                print(f"Warning: No IBW files found in {dataset_path}, skipping...")
+                continue
+            
+            print(f"Computing rewards for {len(ibw_files)} files in {dataset_path}...")
+            
+            # Compute rewards for this dataset
+            rewards, reward_details = compute_rewards_for_files(ibw_files, reward_weights)
+            
+            # Stratify THIS dataset separately
+            if labeling_method == 'stratified':
+                labels, reward_ranges = generate_labels_from_rewards_stratified_separated(rewards, num_classes)
+                print(f"\nStratified labeling for {dataset_name}:")
+                for class_id, range_info in reward_ranges.items():
+                    print(f"  Class {class_id}: {range_info['count']} samples, "
+                          f"rewards {range_info['min']:.3f} to {range_info['max']:.3f}")
+            else:
+                raise ValueError(f"Unknown labeling method: {labeling_method}")
+            
+            # Store dataset info
+            dataset_key = f"{os.path.basename(base_folder)}_{dataset_name}"
+            dataset_info[dataset_key] = {
+                'files': ibw_files,
+                'rewards': rewards,
+                'labels': labels,
+                'reward_details': reward_details,
+                'count': len(ibw_files),
+                'reward_stats': {
+                    'mean': np.nanmean(rewards),
+                    'std': np.nanstd(rewards),
+                    'min': np.nanmin(rewards),
+                    'max': np.nanmax(rewards)
+                },
+                'reward_ranges': reward_ranges
+            }
+            
+            # Add to master lists
+            all_files.extend(ibw_files)
+            all_rewards.extend(rewards)
+            all_labels.extend(labels)
+    
+    if not all_files:
+        raise ValueError("No files found in any dataset")
+    
+    print(f"\nTotal files loaded: {len(all_files)}")
+    print(f"Overall reward statistics:")
+    print(f"  Mean: {np.nanmean(all_rewards):.3f}")
+    print(f"  Std: {np.nanstd(all_rewards):.3f}")
+    print(f"  Range: {np.nanmin(all_rewards):.3f} to {np.nanmax(all_rewards):.3f}")
+    
+    print(f"\nDataset breakdown:")
+    for key, info in dataset_info.items():
+        print(f"  {key}: {info['count']} files, reward range: "
+              f"{info['reward_stats']['min']:.3f} to {info['reward_stats']['max']:.3f}")
+        
+        # Show class distribution for this dataset
+        class_counts = [info['labels'].count(i) for i in range(num_classes)]
+        print(f"    Class distribution: {class_counts}")
+    
+    return all_files, all_labels, all_rewards, dataset_info
+
+def create_labels_dict_from_dataset_info(dataset_info):
+    """
+    Create a labels dictionary from dataset info, handling scan indices properly.
+    """
+    labels_dict = {}
+    
+    for dataset_key, info in dataset_info.items():
+        files = info['files']
+        labels = info['labels']
+        
+        for file_path, label in zip(files, labels):
+            try:
+                from tools import extract_scan_index_from_filename
+                filename = os.path.basename(file_path)
+                scan_index = extract_scan_index_from_filename(filename)
+                labels_dict[scan_index] = label
+            except Exception as e:
+                print(f"Error extracting scan index from {filename}: {e}")
+    
+    return labels_dict
 
