@@ -2255,25 +2255,22 @@ def load_trained_hybrid_model(model_path, num_classes=5, device='cpu'):
     print(f"Model loaded from {model_path}")
     return model
 
-def hb_predict_ibw(model, ibw_file_path, transform, device, 
-                   reward_mean=None, reward_std=None, scan_index=None,
-                   use_cropped=False ):
+def hb_predict_ibw(model, ibw_file_path, transform, device, reward_mean=None, reward_std=None, scan_index=None):
     """
-    Predict quality class and reward for a single IBW file using all augmentations.
+    Predict class and reward for a single IBW file.
+    Now includes class probabilities for ROC-AUC analysis.
     """
     import warnings
+    from collections import Counter
+    import torch.nn.functional as F
+    
     model.eval()
     try:
+        # Load and preprocess IBW
+        ibw_data = load_ibw(ibw_file_path)
+        height_img = ibw_data.z
 
-        # Load and preprocess the IBW file, depending on if it's cropped (dataframe)
-        if not use_cropped:
-            ibw_data = load_ibw(ibw_file_path)
-            height_img = ibw_data.z
-        else:
-            ibw_data = load_ibw(ibw_file_path)
-            height_img = ibw_data.z
-
-        # Convert to PIL image (if not already)
+        # Normalize and convert to PIL
         from PIL import Image
         h_min = np.min(height_img)
         h_max = np.max(height_img)
@@ -2281,82 +2278,137 @@ def hb_predict_ibw(model, ibw_file_path, transform, device,
         norm_img = norm_img.astype(np.uint8)
         pil_img = Image.fromarray(norm_img).convert("RGB")
 
-        # Apply augmentation transform (returns a list of tensors)
+        # Apply augmentations
         augmented_tensors = transform(pil_img)
         if isinstance(augmented_tensors, torch.Tensor):
             augmented_tensors = [augmented_tensors]
-
         if not augmented_tensors:
-            warnings.warn(f"No augmentations produced for {ibw_file_path}.")
-            return {
-                'file_path': ibw_file_path,
-                'error': 'No augmentations produced.',
-                'predicted_class': None
-            }
+            warnings.warn(f"No augmentations for {ibw_file_path}")
+            return {'file_path': ibw_file_path, 'error': 'No augmentations', 'predicted_class': None}
 
-        # Stack into a batch
+        # Stack to batch
         batch_tensor = torch.stack(augmented_tensors).to(device)
 
         with torch.no_grad():
             class_outputs, reward_outputs = model(batch_tensor)
-            probabilities = torch.softmax(class_outputs, dim=1)
-            avg_probabilities = probabilities.mean(dim=0)
+
+            # Classification: argmax over logits
+            _, predictions = torch.max(class_outputs.data, 1)
+            predicted_classes = predictions.cpu().tolist()
+
+            # Majority vote
+            majority_class = Counter(predicted_classes).most_common(1)[0][0]
+
+            # Class probabilities: average softmax over all augmentations
+            class_probs = F.softmax(class_outputs, dim=1)
+            avg_class_probs = class_probs.mean(dim=0).cpu().numpy()
+
+            # Reward prediction
             avg_reward_normalized = reward_outputs.mean().item()
 
-            # Check for NaNs in outputs
-            if (torch.isnan(avg_probabilities).any() or 
-                np.isnan(avg_reward_normalized)):
-                warnings.warn(f"NaN encountered in prediction for {ibw_file_path}.")
-                return {
-                    'file_path': ibw_file_path,
-                    'error': 'NaN encountered in prediction.',
-                    'predicted_class': None
-                }
+            if torch.isnan(class_outputs).any() or torch.isnan(reward_outputs).any():
+                warnings.warn(f"NaN in prediction for {ibw_file_path}")
+                return {'file_path': ibw_file_path, 'error': 'NaN in outputs', 'predicted_class': None}
 
-            predicted_class = torch.argmax(avg_probabilities).item()
-            confidence = avg_probabilities[predicted_class].item()
-
+            # Denormalize reward
             if reward_mean is not None and reward_std is not None and reward_std > 0:
                 predicted_reward_original = avg_reward_normalized * reward_std + reward_mean
             else:
                 predicted_reward_original = avg_reward_normalized
 
-            if scan_index is not None:
-                actual_reward = compute_reward_with_top_features(ibw_data, scan_index=scan_index)
-            else:
-                actual_reward = compute_reward_with_top_features(ibw_data, scan_index=0)
+            actual_reward = compute_reward_with_top_features(ibw_data, scan_index or 0)
 
         quality_descriptions = {
             0: "Excellent (Class 0)",
-            1: "Good (Class 1)", 
+            1: "Good (Class 1)",
             2: "Fair (Class 2)",
             3: "Poor (Class 3)",
-            4: "Bad (Class 4)"
+            4: "Bad (Class 4)",
+            5: "Worst (Class 5)"
         }
 
-        result = {
+        return {
             'file_path': ibw_file_path,
-            'predicted_class': predicted_class,
-            'quality_description': quality_descriptions[predicted_class],
-            'confidence': confidence,
-            'class_probabilities': avg_probabilities.cpu().numpy(),
+            'predicted_class': majority_class,
+            'class_probabilities': avg_class_probs,  # NEW: for ROC-AUC
+            'quality_description': quality_descriptions.get(majority_class, f"Class {majority_class}"),
+            'confidence': predicted_classes.count(majority_class) / len(predicted_classes),
             'predicted_reward_normalized': avg_reward_normalized,
             'predicted_reward_original': predicted_reward_original,
             'actual_reward': actual_reward,
             'reward_difference': abs(predicted_reward_original - actual_reward),
-            'scan_index_used': scan_index if scan_index is not None else 0,
+            'scan_index_used': scan_index or 0,
             'num_augmentations': len(augmented_tensors)
         }
-        return result
-
+    
     except Exception as e:
-        import warnings
         print(f"Prediction failed for {ibw_file_path}: {e}")
-        return {
-            'file_path': ibw_file_path,
-            'error': str(e),
-            'predicted_class': None
-        }
+        return {'file_path': ibw_file_path, 'error': str(e), 'predicted_class': None}
+
+def hb_predict_with_metadata(model, ibw_file_paths, model_metadata_path, device):
+    """
+    Predict using the same normalization parameters as training
+    
+    Inputs:
+        model: Trained model
+        ibw_file_paths: List of IBW file paths
+        model_metadata_path: Path to saved training metadata (pickle file)
+        device: PyTorch device
+    
+    Outputs:
+        List of prediction results
+    """
+    import pickle
+    
+    # Load training metadata
+    try:
+        with open(model_metadata_path, 'rb') as f:
+            metadata = pickle.load(f)
+        
+        transform = metadata['transform']
+        reward_mean = metadata.get('reward_mean', None)
+        reward_std = metadata.get('reward_std', None)
+        file_to_index = metadata.get('file_to_index', {})  # Maps file paths to scan indices
+        
+        print(f"Loaded training metadata:")
+        print(f"  Reward normalization - Mean: {reward_mean}, Std: {reward_std}")
+        print(f"  Transform: {transform}")
+        
+    except FileNotFoundError:
+        print("Warning: No metadata file found. Using default parameters.")
+        # Use same transform as training
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                               std=[0.229, 0.224, 0.225]),
+        ])
+        reward_mean = reward_std = None
+        file_to_index = {}
+    
+    results = []
+    
+    print(f"Predicting quality for {len(ibw_file_paths)} files...")
+    
+    for i, file_path in enumerate(ibw_file_paths):
+        print(f"Processing file {i+1}/{len(ibw_file_paths)}: {file_path}")
+        
+        # Get scan index if available from training
+        scan_index = extract_scan_index_from_filename(file_path)
+        print(f"File: {os.path.basename(file_path)}, Extracted scan_index: {scan_index}")
+        
+        aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
+        result = hb_predict_ibw(model, file_path, aug_transform, device, 
+                               reward_mean=reward_mean, reward_std=reward_std, scan_index=scan_index)
+        results.append(result)
+        
+        if 'error' not in result:
+            print(f"Scan Index: {scan_index} Predicted: Class {result['predicted_class']} ({result['quality_description']}) "
+                  f"with {result['confidence']:.3f} confidence")
+        else:
+            print(f"  Error: {result['error']}")
+    
+    return results
 
 def hb_predict_like_training(model, ibw_file_path, transform, device,
                           reward_mean=None, reward_std=None, scan_index=None,
@@ -2451,69 +2503,6 @@ def hb_predict_like_training(model, ibw_file_path, transform, device,
     except Exception as e:
         print(f"Prediction failed for {ibw_file_path}: {e}")
         return {'file_path': ibw_file_path, 'error': str(e), 'predicted_class': None}
-
-def hb_predict_with_metadata(model, ibw_file_paths, model_metadata_path, device):
-    """
-    Predict using the same normalization parameters as training
-    
-    Inputs:
-        model: Trained model
-        ibw_file_paths: List of IBW file paths
-        model_metadata_path: Path to saved training metadata (pickle file)
-        device: PyTorch device
-    
-    Outputs:
-        List of prediction results
-    """
-    import pickle
-    
-    # Load training metadata
-    try:
-        with open(model_metadata_path, 'rb') as f:
-            metadata = pickle.load(f)
-        
-        transform = metadata['transform']
-        reward_mean = metadata.get('reward_mean', None)
-        reward_std = metadata.get('reward_std', None)
-        file_to_index = metadata.get('file_to_index', {})  # Maps file paths to scan indices
-        
-        print(f"Loaded training metadata:")
-        print(f"  Reward normalization - Mean: {reward_mean}, Std: {reward_std}")
-        print(f"  Transform: {transform}")
-        
-    except FileNotFoundError:
-        print("Warning: No metadata file found. Using default parameters.")
-        # Use same transform as training
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                               std=[0.229, 0.224, 0.225]),
-        ])
-        reward_mean = reward_std = None
-        file_to_index = {}
-    
-    results = []
-    
-    print(f"Predicting quality for {len(ibw_file_paths)} files...")
-    
-    for i, file_path in enumerate(ibw_file_paths):
-        print(f"Processing file {i+1}/{len(ibw_file_paths)}: {file_path}")
-        
-        # Get scan index if available from training
-        scan_index = extract_scan_index_from_filename(file_path)
-        print(f"File: {os.path.basename(file_path)}, Extracted scan_index: {scan_index}")
-        aug_transform = AugmentedTransform(base_size=256, crop_size=86, normalize=True)
-        result = hb_predict_ibw(model, file_path, aug_transform, device, scan_index=scan_index)
-        results.append(result)
-        
-        if 'error' not in result:
-            print(f"Scan Index: {scan_index} Predicted: Class {result['predicted_class']} ({result['quality_description']}) "
-                  f"with {result['confidence']:.3f} confidence")
-        else:
-            print(f"  Error: {result['error']}")
-    
-    return results
 
 def hb_batch_predict_like_training(model, ibw_file_paths, model_metadata_path, device):
     """
@@ -2651,26 +2640,65 @@ def add_true_labels_to_results_using_scan_indices(results):
 def hb_generate_roc_auc_curve(results, true_labels, num_classes=5, title="ROC Curve"):
     """
     Generate and plot the ROC-AUC curve for multiclass classification.
+    Now includes error handling for missing class probabilities.
     
     Args:
         results: list of prediction dicts (must include 'class_probabilities')
         true_labels: list/array of ground truth labels (generated from stratified rewards)
     """
-    y_probs = [r["class_probabilities"] for r in results]
+    from sklearn.preprocessing import label_binarize
+    from sklearn.metrics import roc_curve, auc
+    import matplotlib.pyplot as plt
+    
+    # Filter out results with errors
+    valid_results = [r for r in results if 'error' not in r and 'class_probabilities' in r]
+    
+    if len(valid_results) == 0:
+        print("No valid results with class probabilities found. Cannot generate ROC-AUC curve.")
+        return {}
+    
+    if len(valid_results) != len(true_labels):
+        print(f"Warning: Number of valid results ({len(valid_results)}) doesn't match true labels ({len(true_labels)})")
+        # Adjust true_labels to match valid results
+        valid_indices = [i for i, r in enumerate(results) if 'error' not in r and 'class_probabilities' in r]
+        true_labels = np.array(true_labels)[valid_indices]
+    
+    y_probs = [r["class_probabilities"] for r in valid_results]
     y_probs = np.array(y_probs)
     y_true = np.array(true_labels)
     
+    # Ensure y_probs has the right shape for num_classes
+    if y_probs.shape[1] != num_classes:
+        print(f"Warning: Class probabilities shape {y_probs.shape} doesn't match num_classes {num_classes}")
+        # Pad with zeros if needed
+        if y_probs.shape[1] < num_classes:
+            padding = np.zeros((y_probs.shape[0], num_classes - y_probs.shape[1]))
+            y_probs = np.concatenate([y_probs, padding], axis=1)
+        else:
+            y_probs = y_probs[:, :num_classes]
+    
     y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
+    
+    # Handle case where not all classes are present
+    if y_true_bin.shape[1] < num_classes:
+        padding = np.zeros((y_true_bin.shape[0], num_classes - y_true_bin.shape[1]))
+        y_true_bin = np.concatenate([y_true_bin, padding], axis=1)
     
     fpr, tpr, roc_auc = {}, {}, {}
     for i in range(num_classes):
-        fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_probs[:, i])
-        roc_auc[i] = auc(fpr[i], tpr[i])
+        if np.sum(y_true_bin[:, i]) > 0:  # Only compute if class is present
+            fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_probs[:, i])
+            roc_auc[i] = auc(fpr[i], tpr[i])
+        else:
+            print(f"Warning: Class {i} not present in true labels. Skipping ROC-AUC calculation.")
+            roc_auc[i] = 0.0
     
     plt.figure(figsize=(10, 8))
     for i in range(num_classes):
-        plt.plot(fpr[i], tpr[i], label=f'Class {i} (AUC={roc_auc[i]:.2f})')
-    plt.plot([0, 1], [0, 1], 'k--')
+        if i in roc_auc:
+            plt.plot(fpr[i], tpr[i], label=f'Class {i} (AUC={roc_auc[i]:.2f})')
+    
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.title(title)
@@ -5104,7 +5132,6 @@ def hybrid_model_from_config(config_path="config.yaml"):
     print(f"Using device: {device}")
     print(f"NUMBER OF CLASSES: {config.num_classes}")
 
-
     base_folder = config.original_dataset['base_folder']
     dataset_folders = config.original_dataset['dataset_folders']
 
@@ -5200,8 +5227,8 @@ def hybrid_model_from_config(config_path="config.yaml"):
 
     # Phase 2: Build model, optimizer, and scheduler
     model = RewardAwareModel(num_classes=config.num_classes, pretrained=True).to(device)
-    optimizer = build_optimizer(config, model.parameters())
-    scheduler = build_scheduler(config, optimizer)
+    # optimizer = build_optimizer(config, model.parameters())
+    # scheduler = build_scheduler(config, optimizer)
 
     print("\nReward Distribution and Corresponding Classes:")
 
@@ -5229,11 +5256,11 @@ def hybrid_model_from_config(config_path="config.yaml"):
     print("\nStarting training...")
 
     # Training function
-    train_losses, val_losses, val_accuracies, plotter = train_hybrid_model_with_config(
+    train_losses, val_losses, val_accuracies, plotter, optimizer = train_hybrid_model_with_config(
         model=model,
+        config=config,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        optimizer=optimizer,
         device=device,
         num_epochs=config.num_epochs,
         use_adaptive_loss=config.use_adaptive_loss,
@@ -5244,8 +5271,6 @@ def hybrid_model_from_config(config_path="config.yaml"):
         plot_window_size=config.plotter['window_size'],
         plot_update_frequency=config.plotter['plot_update_frequency'],
         plot_scroll_size=config.plotter['window_buffer_size'],
-        
-        selected_scheduler=scheduler,
 
         non_adaptive_reward_weight=config.non_adaptive_reward_weight,
 
@@ -5280,10 +5305,10 @@ def hybrid_model_from_config(config_path="config.yaml"):
         'val_rewards': val_rewards
     }
 
-def train_hybrid_model_with_config(model, 
+def train_hybrid_model_with_config(model,
+                                   config, 
                                    train_dataloader, 
                                    val_dataloader, 
-                                   optimizer, 
                                    device, 
                                    num_epochs=10, 
                                    use_adaptive_loss=True, 
@@ -5294,8 +5319,6 @@ def train_hybrid_model_with_config(model,
                                    plot_window_size=400,
                                    plot_update_frequency=5,
                                    plot_scroll_size=400, 
-
-                                   selected_scheduler=None,
 
                                    non_adaptive_reward_weight=0.1,
 
@@ -5317,28 +5340,23 @@ def train_hybrid_model_with_config(model,
     )
     
     # Setup loss function and optimizer
+    # Setup loss function and optimizer
     if use_adaptive_loss:
         try:
             criterion = AdaptiveLoss().to(device)
-            # Deprecated with config
-            # optimizer = optim.Adam(list(model.parameters()) + list(criterion.parameters()), 
-            #                       lr=1e-4, weight_decay=1e-4)
+            optimizer = build_optimizer(config, list(model.parameters()) + list(criterion.parameters()))
         except NameError:
             print("AdaptiveLoss not found, using standard loss functions")
             use_adaptive_loss = False
             classification_criterion = nn.CrossEntropyLoss()
             reward_criterion = nn.MSELoss()
+            optimizer = build_optimizer(config, model.parameters())
     else:
         classification_criterion = nn.CrossEntropyLoss()
         reward_criterion = nn.MSELoss()
-    
-    # Cosine Annealing, gradient change may be better for this case
-    if selected_scheduler is not None:
-        scheduler = selected_scheduler
-    else:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=10, eta_min=1e-6
-        )
+        optimizer = build_optimizer(config, model.parameters())
+
+    scheduler = build_scheduler(config, optimizer)
     
     best_val_loss = float('inf')
     best_val_accuracy = 0.0
@@ -5412,7 +5430,12 @@ def train_hybrid_model_with_config(model,
                     
                     print(f"  Epoch [{epoch+1}/{num_epochs}] Batch [{i+1}/{len(train_dataloader)}] - "
                           f"Loss: {total_loss.item():.4f} | Avg: {avg_loss:.4f} "
-                          f"(Class: {avg_class:.4f}, Reward: {avg_reward:.4f})")
+                          f"(Class: {avg_class:.4f}, Reward: {avg_reward:.4f})"
+                          )
+                    
+                if use_adaptive_loss and (i + 1) % 100 == 0:
+                    print(f"Batch {i+1}: log_var_class: {criterion.log_var_class.item():.4f}, "
+                        f"log_var_reward: {criterion.log_var_reward.item():.4f}")
             
             # Force plot update at end of epoch
             plotter.update_batch_metrics(
@@ -5435,6 +5458,8 @@ def train_hybrid_model_with_config(model,
                         
             # Learning rate scheduling
             scheduler.step(val_loss)
+
+
             
             # Calculate epoch statistics
             avg_train_loss = running_loss / len(train_dataloader)
@@ -5500,7 +5525,7 @@ def train_hybrid_model_with_config(model,
     print(f"Best validation accuracy: {best_val_accuracy:.4f} ({best_val_accuracy*100:.2f}%)")
     # print(f"Final plot saved as 'final_training_progress.png'")
     
-    return train_losses, val_losses, val_accuracies, plotter
+    return train_losses, val_losses, val_accuracies, plotter, optimizer
 
 def hybrid_model_from_config_no_classifier(config_path="config.yaml"):
     # Load config
@@ -5729,8 +5754,8 @@ def train_hybrid_model_with_config_no_classifier(model,
         try:
             criterion = AdaptiveLoss().to(device)
             # Deprecated with config
-            # optimizer = optim.Adam(list(model.parameters()) + list(criterion.parameters()), 
-            #                       lr=1e-4, weight_decay=1e-4)
+            # params = list(model.parameters()) + list(criterion.parameters())
+            # optimizer = optim.Adam(params, lr=1e-4, weight_decay=1e-4)
         except NameError:
             print("AdaptiveLoss not found, using standard loss functions")
             use_adaptive_loss = False
@@ -5798,6 +5823,9 @@ def train_hybrid_model_with_config_no_classifier(model,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 optimizer.step()
+
+                # Print adaptive reward weights (if applicable)
+                print(f"log_var_class: {criterion.log_var_class.item()}, log_var_reward: {criterion.log_var_reward.item()}")
                 
                 # Update running statistics
                 running_loss += total_loss.item()
