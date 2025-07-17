@@ -602,3 +602,6 @@ The large dataset now contains 200 images, which through 72x augmentation, yield
 Adding real-time prediction for use in the AFM and possibly training with more images. This could also lead into live training using new images as the model predicts, which would lead into a full suite.
 
 Updating documentation around training and polishing the `tools.py` module.
+
+## Has not been updated to reflect changes in ground-truth labeling. Follow the exploration in `exp2.ipynb` for this process.
+## Scripts for training have been updated to use this process.
