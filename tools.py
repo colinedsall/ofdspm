@@ -1,10 +1,10 @@
 """
 Filename:           tools.py
 Author:             Colin Edsall
-Date:               July 10, 2025
-Version:            4
+Date:               July 18, 2025
+Version:            5
 Changelog:          (Version 1) Initial commit.
-Description:        This python file contains scripts needed for training  either the Barlow Twins approach 
+Description:        This python file contains scripts needed for training either the Barlow Twins approach 
                     for a model to predict the condition of an AFM tip based on trace and image data, or the
                     hybrid model hypothesized.
 
@@ -27,6 +27,13 @@ Description:        This python file contains scripts needed for training  eithe
                     configurable. This involves changing the learning scheduler, optimizer, and other
                     configurable training elements into a class so that the user can easily modify and
                     compare values used during training instead of hard-defined constants. See `config.yaml`.
+
+                    (Version 5) Publishing changes
+                    This version is intended to update documentation for this module based on what useful
+                    functions are actually used after training. Though the code base is currently quite large,
+                    many functions have not been adapted for the final project status. This update hopes to fix
+                    that, as well as adding necessary documentation for elements like prediction, alongside
+                    organizational changes if a future developer intends on changing the basis of many functions.
 """
 
 # Torch, for accessing models
@@ -51,7 +58,7 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay# Confusion 
 from sklearn.metrics import roc_curve, auc, roc_auc_score           # ROC curves
 from sklearn.preprocessing import label_binarize                    # Labeling
 from scipy import stats                 
-import random
+import random                                   
 import traceback
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -87,9 +94,9 @@ import json
 from datetime import datetime
 from itertools import cycle
 import time
-import yaml
+import yaml                                                         # Configuration files
 
-"""
+""" AE-SPM API ADAPTATION
 Adaptation of the API to handle this experimental data case. Note: this does not impact other experiments 
 that this method can handle, but the current library does not support the data needed for this kind of training.
 
@@ -584,11 +591,30 @@ def get_ibw_grid(ibw_parent_folder, grid_size=10, channel_name='Height (T)'):
 
     return grid
 
-"""
+""" HYBRID MODEL CLASS DEFINITIONS, TRAINING, AND ANALYSIS SUITE
 Hybrid model training functions and class definitions for adaptive loss training and a reward-aware model.
 """
 
 class AdaptiveLoss(nn.Module):
+    """
+    Defines the adaptive loss method used during training to allow for adaptive weighting based on the
+    uncertainty and exploration/exploitation of a model.
+    
+    The log variances are used to automatically balance learning task by difficulty and scale (if the model)
+    can't minimize some task such as classification, it will increase the contribution relative to the
+    regression task.
+
+    This occurs during each training cycle, but is observed to not matter as much in later batches/epochs.
+
+    Args:
+        nn.Module:  A NN module from pytorch base class for all NN modules (used with ResNet CNN here).
+
+    Returns:
+        total_loss:     Combined total loss from adaptive weights of classifier and regressor.
+        class_loss:     Class loss
+        reward_loss:    Reward loss
+    """
+
     def __init__(self):
         super(AdaptiveLoss, self).__init__()
         # Learnable weights for multi-task learning
@@ -684,13 +710,17 @@ class AugmentedTransform:
     """
     Custom transform class that handles the comprehensive data augmentation
     """
-    # Crop size is defined as 3x3 image, but this can be changed via the crop_size arg
+
+    # Crop size is defined as 3x3 image, but this can be changed via the crop_size arg.
+    # It's not recommended to change this, as it provides some undefined behavior, but any crop sizes
+    # that do not evenly split the image *can* cause some overlapping. This is a training design choice.
     def __init__(self, base_size=224, crop_size=86, normalize=True):
         self.base_size = base_size
         self.crop_size = crop_size
         self.normalize = normalize
         
-        # Normalization, defined experimentally (can change)
+        # Normalization, defined from the standard ImageNet dataset, for the ResNet backbone
+        # These values were obtained from another source and are not magic numbers beyond that scope.
         if normalize:
             self.normalize_transform = transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -736,7 +766,7 @@ class AugmentedTransform:
         return augmented_images
     
     def _create_crops(self, img):
-        """Create 9 crops from the image in a 3x3 grid"""
+        # Create 9 crops from the image in a 3x3 grid
         crops = []
         w, h = img.size
         
@@ -758,7 +788,7 @@ class AugmentedTransform:
         return crops
     
     def _to_tensor_and_normalize(self, pil_img):
-        """Convert PIL image to tensor and apply normalization"""
+        # Convert PIL image to tensor and apply normalization
         tensor = transforms.ToTensor()(pil_img)
         if self.normalize_transform:
             tensor = self.normalize_transform(tensor)
@@ -2850,7 +2880,7 @@ def hb_compute_confusion_matrix_from_results(results, true_labels, num_classes=5
     
     return cm
 
-"""
+""" BARLOW TWINS (BT) MODEL
 Barlow Twins model training functions and class definitions for encoder training and a reward-aware classifier model.
 """
 
@@ -4387,7 +4417,7 @@ def bt_plot_confidence_vs_predicted_class(results, title="Confidence vs Predicte
     plt.grid(True)
     plt.show()
 
-"""
+""" PCA ANALYSIS
 PCA Analysis for comparsion of the two models. This may need to be changed to solely
 focus on a single model, as for now it outputs images of both.
 """
@@ -5012,7 +5042,7 @@ class CombinedBT_HB_Classifier:
         print(f"Average class disagreed on: {BOLD_START}Class {int(round(self.data['average_class_difference']))}{BOLD_END}")
         print(f"Most common class disagreed on: {BOLD_START}Class {self.data['most_common_class_disagreement']}{BOLD_END}")
 
-"""
+""" CONFIGURATION FILE CHANGES (HYBRID MODEL)
 Training a hybrid model using a config file. This can also be modified and created
 as needed, but dictionary key/value pairs may cause errors if the file is created from
 scratch. Use the template in the repository to configure all available options.
@@ -5938,7 +5968,7 @@ def train_hybrid_model_with_config_no_classifier(model,
     
     return train_losses, val_losses, val_accuracies, plotter
 
-"""
+""" LABELING CHANGES USING GROUND-TRUTH DISTRIBUTIONS
 PI Concern #2: Labeling Fix. We now use the reward distribution to define classes instead of index.
 """
 
@@ -6614,8 +6644,18 @@ def create_labels_dict_from_dataset_info(dataset_info):
     
     return labels_dict
 
-"""
-Reward-only regressor (experimental, not complete)
+""" REWARD-ONLY REGRESSOR
+Exploration: Reward-only regressor (experimental, not complete).
+
+This could allow for more accurate results since the previous analysis without a classifier
+head still trained a classifier, but didn't use its weights. Instead, this could possbily
+use the MSE to the ground-truth reward distribution class labeling instead of allowing the 
+classifier to make decisions.
+
+Perhaps this would make training more accurate, but woudl require some addition to model's
+workflow instead of just a standard continuous regression pipeline.
+
+Prediction methods are also not complete.
 """
 
 def train_reward_only_model(model, 
