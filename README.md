@@ -605,3 +605,59 @@ Updating documentation around training and polishing the `tools.py` module.
 
 ## Has not been updated to reflect changes in ground-truth labeling. Follow the exploration in `exp2.ipynb` for this process.
 ## Scripts for training have been updated to use this process.
+
+# Submission Version 2
+After coming to a development standstill:
++ The project uses the same development process, but instead of using scan index for direct labeling, we use the stratified reward distribution to determine classes.
+
+![alt text](images/readme_update_future_potential/image-1.png)
+
++ The automated experiment has a better description, of which the image is given below:
+ ![alt text](images/readme_update_future_potential/image-2.png)
+ ![alt text](images/readme_update_future_potential/image-3.png)
+
++ The regressor head still performs very poorly. Some **experimental adaptations of the linear regressor to minimize RMSE works fairly well, though that adaptation is not covered.
+
++ Final classification comparisons are given:
+![alt text](images/readme_update_future_potential/image-5.png)
+![alt text](images/readme_update_future_potential/image-4.png)
+
++ Updated diagrams for training:
+![alt text](images/readme_update_future_potential/image-6.png)
+
+# Further Changes or Possible Updates
++ Adapting the regressor to be more accurate. It would be fairly understandable that a data-based regressor can learn the distribution of ground-truth labels and add to the consistency of the classifier head instead of performing poorly.
++ Exploration into an updated linear regressor model shows that it has strong classification accuracy (near 100%), but this is expected and not learnable in a general sense since the distribution is man-made and not generalizable to many samples.
+
+![alt text](images/readme_update_future_potential/image-7.png)
+![alt text](images/readme_update_future_potential/image-9.png)
+![alt text](images/readme_update_future_potential/image-8.png)
+
+## Using generative AI to prototype the adaptation of the new regressor model shows promising results, but the codebase is too large and convoluted for a final product. 
+## This exploration is kept in `test.ipynb`, but it is not clear. The last few functions cover basic training but I could not adapt augmentation or more advanced testing procedures due to time constraints.
+## Model accuracy appears to converge at the same rate as the current hybrid approach, but the adapted regressor still performs much better. Perhaps hyperparameter/loss function tuning could result in near perfect classification.
+
+### Classification Accuracy for Adapted Regressor
+
+![alt text](images/readme_update_future_potential/unknown_classification_accuracy_grid.png)
+
+### Ground Truth Labels for Adapted Regressor
+
+![alt text](images/readme_update_future_potential/unknown_ground_truth_labels_grid.png)
+
+### Ground Truth Reward Distribution for Adapted Regressor
+
+![alt text](images/readme_update_future_potential/unknown_ground_truth_rewards_grid.png)
+
+### Predicted Labels Grid for Adapted Regressor
+
+![alt text](images/readme_update_future_potential/unknown_predicted_labels_grid.png)
+### Predicted Rewards Distribution for Adapted Regressor
+
+![alt text](images/readme_update_future_potential/unknown_predicted_rewards_grid.png)
+
+### Regression Error Distribution for Adapted Regressor
+![alt text](images/readme_update_future_potential/unknown_regression_error_grid.png)
+
+# Further additions
+Notebook from testing should be added, could not find it in directory.

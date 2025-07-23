@@ -90,20 +90,20 @@ training:
 
   # Defines the % of data used for training
   train_split_weight: 0.6   
-  num_epochs: 20
+  num_epochs: 100
   training_batch_size: 16
 
   # Set this flag to False if training is ran via script, else True
   # If set incorrectly, the plots will not update, but training will continue as usual
-  training_uses_jupyter_notebook: false
+  training_uses_jupyter_notebook: true
 
   # If wanted, the number of classes can be changed from 5
-  num_classes: 6
+  num_classes: 5
 
   # If using both classifier and reward head, this allows the training to define
   # the collective ratio of weights for reward and classifier loss during training.
   # Else, it uses a pre-defined reward weight (below).
-  use_adaptive_loss:  true
+  use_adaptive_loss:  false
   non_adaptive_reward_weight: 1.0
   
   # Live plotter configuration
@@ -119,6 +119,6 @@ training:
     window_buffer_size: 500
 
   # Output filename, (file extension .pth is added automatically)
-  output_filename:  'hybrid_trained_model'
+  output_filename:  'bt_test_model'
 
 
